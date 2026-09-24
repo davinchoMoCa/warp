@@ -1234,10 +1234,30 @@ pub enum CLISubagentControlState {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloudAgentShellRecoveryOutcome {
-    Attempted,
+    Detected,
+    Started,
     Succeeded,
     Failed,
-    Capped,
+    Exhausted,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentShellExitDetection {
+    ExitCode,
+    Signal,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentShellRecoveryFailureClass {
+    EventLoopJoin,
+    PtySpawn,
+    BootstrapTimeout,
+    ReplacementShellExit,
+    ManagerUnsupported,
+    SharedSessionRebind,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -2640,9 +2660,14 @@ pub enum TelemetryEvent {
     CloudAgentShellRecovery {
         outcome: CloudAgentShellRecoveryOutcome,
         attempt: u8,
+        detection: CloudAgentShellExitDetection,
+        status_available: bool,
         exit_code: Option<i32>,
         signal: Option<i32>,
+        duration_ms: Option<u32>,
+        dynamic_session_environment_available: bool,
         used_fallback_directory: Option<bool>,
+        failure_class: Option<CloudAgentShellRecoveryFailureClass>,
     },
     /// Emitted when the user uses voice input from the CLI agent footer.
     CLIAgentToolbarVoiceInputUsed {
@@ -4574,15 +4599,25 @@ impl TelemetryEvent {
             TelemetryEvent::CloudAgentShellRecovery {
                 outcome,
                 attempt,
+                detection,
+                status_available,
                 exit_code,
                 signal,
+                duration_ms,
+                dynamic_session_environment_available,
                 used_fallback_directory,
+                failure_class,
             } => Some(json!({
                 "outcome": outcome,
                 "attempt": attempt,
+                "detection": detection,
+                "status_available": status_available,
                 "exit_code": exit_code,
                 "signal": signal,
+                "duration_ms": duration_ms,
+                "dynamic_session_environment_available": dynamic_session_environment_available,
                 "used_fallback_directory": used_fallback_directory,
+                "failure_class": failure_class,
             })),
             TelemetryEvent::CLIAgentToolbarVoiceInputUsed { cli_agent } => Some(json!({
                 "agent_name": cli_agent,
