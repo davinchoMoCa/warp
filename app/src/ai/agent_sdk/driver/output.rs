@@ -54,6 +54,15 @@ pub mod text {
                         exit_code,
                         ..
                     } => writeln!(w, "{output}\n\n (`{command}` exited with code {exit_code})"),
+                    RequestCommandOutputResult::ShellRecovered {
+                        command,
+                        output,
+                        status,
+                        ..
+                    } => writeln!(
+                        w,
+                        "{output}\n\n (`{command}` terminated the persistent shell: {status})"
+                    ),
                     RequestCommandOutputResult::LongRunningCommandSnapshot { command, .. } => {
                         writeln!(w, "`{command}` is still running...")
                     }
@@ -853,6 +862,14 @@ pub mod json {
                             output,
                         },
                     ))),
+                    RequestCommandOutputResult::ShellRecovered { output, status, .. } => {
+                        Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
+                            JsonRunCommandResult::Complete {
+                                exit_code: status.failure_exit_code(),
+                                output,
+                            },
+                        )))
+                    }
                     RequestCommandOutputResult::LongRunningCommandSnapshot { .. } => {
                         Some(JsonMessage::ToolResult(JsonToolResult::RunCommand(
                             JsonRunCommandResult::Running,

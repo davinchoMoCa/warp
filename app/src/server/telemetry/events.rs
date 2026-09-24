@@ -1230,6 +1230,15 @@ pub enum CLISubagentControlState {
     AgentTaggedIn,
     AgentTaggedOut,
 }
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAgentShellRecoveryOutcome {
+    Attempted,
+    Succeeded,
+    Failed,
+    Capped,
+}
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteCodebaseIndexStatusTelemetrySource {
@@ -2627,6 +2636,13 @@ pub enum TelemetryEvent {
     AgentExitedShellProcess {
         command: String,
         server_output_id: Option<ServerOutputId>,
+    },
+    CloudAgentShellRecovery {
+        outcome: CloudAgentShellRecoveryOutcome,
+        attempt: u8,
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        used_fallback_directory: Option<bool>,
     },
     /// Emitted when the user uses voice input from the CLI agent footer.
     CLIAgentToolbarVoiceInputUsed {
@@ -4555,6 +4571,19 @@ impl TelemetryEvent {
                 "command": command,
                 "server_output_id": server_output_id,
             })),
+            TelemetryEvent::CloudAgentShellRecovery {
+                outcome,
+                attempt,
+                exit_code,
+                signal,
+                used_fallback_directory,
+            } => Some(json!({
+                "outcome": outcome,
+                "attempt": attempt,
+                "exit_code": exit_code,
+                "signal": signal,
+                "used_fallback_directory": used_fallback_directory,
+            })),
             TelemetryEvent::CLIAgentToolbarVoiceInputUsed { cli_agent } => Some(json!({
                 "agent_name": cli_agent,
             })),
@@ -5119,6 +5148,7 @@ impl TelemetryEvent {
             | TelemetryEvent::AgentTipShown { .. }
             | TelemetryEvent::AgentTipClicked { .. }
             | TelemetryEvent::ToggleShowAgentTips { .. }
+            | TelemetryEvent::CloudAgentShellRecovery { .. }
             | TelemetryEvent::CLIAgentToolbarVoiceInputUsed { .. }
             | TelemetryEvent::CLIAgentToolbarImageAttached { .. }
             | TelemetryEvent::CLIAgentToolbarShown { .. }
@@ -5658,6 +5688,9 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             }
             Self::DetectedIsolationPlatform { .. } => EnablementState::Always,
             Self::AgentExitedShellProcess { .. } => EnablementState::Always,
+            Self::CloudAgentShellRecovery { .. } => {
+                EnablementState::Flag(FeatureFlag::CloudAgentShellRespawn)
+            }
             Self::CLIAgentToolbarVoiceInputUsed { .. } => EnablementState::Always,
             Self::CLIAgentToolbarImageAttached { .. } => EnablementState::Always,
             Self::CLIAgentToolbarShown { .. } => EnablementState::Always,
@@ -6215,6 +6248,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             Self::AgentTipClicked => "AgentTip Clicked",
             Self::ToggleShowAgentTips => "Toggle Show Agent Tips",
             Self::AgentExitedShellProcess => "AgentMode.ExitedShellProcess",
+            Self::CloudAgentShellRecovery { .. } => "AgentMode.CloudShellRecovery",
             Self::CLIAgentToolbarVoiceInputUsed { .. } => "CLIAgentFooter.VoiceInputUsed",
             Self::CLIAgentToolbarImageAttached { .. } => "CLIAgentFooter.ImageAttached",
             Self::CLIAgentToolbarShown { .. } => "CLIAgentFooter.Shown",
@@ -7017,6 +7051,9 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             Self::AgentTipClicked => "User clicked a link or action in an Agent Tip",
             Self::AgentExitedShellProcess => {
                 "An agent-requested command caused the shell process to exit"
+            }
+            Self::CloudAgentShellRecovery { .. } => {
+                "A cloud agent persistent shell recovery changed state"
             }
             Self::CLIAgentToolbarVoiceInputUsed { .. } => {
                 "User used voice input from the CLI agent footer"
