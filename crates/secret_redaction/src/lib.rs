@@ -193,8 +193,8 @@ pub fn find_secrets_in_text_with_levels_using_regex(
     }
     byte_to_char_index[text.len()] = char_index; // Map the last byte to the last character index
 
-    // Keep the cache call-scoped because the regex's shared pool retains a cache for each thread
-    // that searches it.
+    // Keep the cache call-scoped because the regex's shared pool retains caches up to the peak
+    // number of concurrent searches.
     let mut cache = regex.create_cache();
     let mut it = Searcher::new(Input::new(text));
 
