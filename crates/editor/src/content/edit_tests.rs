@@ -12,7 +12,7 @@ use warpui_core::assets::asset_cache::{AssetCache, AssetSource, AssetState};
 use warpui_core::fonts::{Properties, Style, Weight};
 use warpui_core::image_cache::ImageType;
 use warpui_core::text::point::Point;
-use warpui_core::text_layout::{LayoutCache, StyleAndFont, TextStyle};
+use warpui_core::text_layout::{StyleAndFont, TextStyle};
 use warpui_core::{App, SingletonEntity};
 
 use super::{
@@ -245,9 +245,7 @@ fn test_layout_delta_never_takes_ownership_of_new_lines_with_multiple_owners() {
     // layout call touches the `Arc`'s strong count or invalidates the other clone.
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -332,8 +330,6 @@ fn test_edit_delta_clone_shares_precise_delta_allocation() {
 fn test_layout_partial_url() {
     // Regression test for laying out a partially-styled autodetected URL (CLD-871).
     App::test((), |app| async move {
-        let layout_cache = LayoutCache::new();
-
         let runs = vec![
             StyledBufferRun {
                 run: "A link: https://www.".to_string(),
@@ -354,7 +350,6 @@ fn test_layout_partial_url() {
 
         app.read(|ctx| {
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -421,13 +416,8 @@ fn test_layout_mermaid_block_uses_loaded_svg_aspect_ratio() {
         }
 
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let block_style = BufferBlockStyle::CodeBlock {
                 code_block_type: CodeBlockType::Mermaid,
             };
@@ -498,13 +488,8 @@ fn test_unloaded_mermaid_diagram_uses_stable_full_width_placeholder_height() {
     App::test((), |app| async move {
         let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let contents = "graph TD\nA[Unloaded] --> B[Placeholder]\n";
             let block_style = BufferBlockStyle::CodeBlock {
                 code_block_type: CodeBlockType::Mermaid,
@@ -558,13 +543,8 @@ fn test_empty_mermaid_block_lays_out_as_code_block() {
     App::test((), |app| async move {
         let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let block = mermaid_code_block("\n");
             let (item, _has_trailing_newline) =
                 layout_mermaid_block_for_test(block, &text_layout, mermaid_layout_options(), ctx)
@@ -593,13 +573,8 @@ fn test_non_parseable_mermaid_block_lays_out_as_code_block() {
     App::test((), |app| async move {
         let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let block = mermaid_code_block("echo hi\n");
             let (item, _) =
                 layout_mermaid_block_for_test(block, &text_layout, mermaid_layout_options(), ctx)
@@ -656,13 +631,8 @@ fn test_invalid_mermaid_block_stays_as_code_block_after_load_fails() {
                 "Mermaid render for invalid source should have failed"
             );
 
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let block = mermaid_code_block(contents);
             let (item, _) =
                 layout_mermaid_block_for_test(block, &text_layout, mermaid_layout_options(), ctx)
@@ -708,13 +678,8 @@ fn test_valid_mermaid_block_lays_out_as_diagram_after_load() {
         }
 
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let block = mermaid_code_block(contents);
             let (item, _) =
                 layout_mermaid_block_for_test(block, &text_layout, mermaid_layout_options(), ctx)
@@ -733,13 +698,8 @@ fn test_mermaid_block_skipped_when_render_disabled() {
     App::test((), |app| async move {
         let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
-            let text_layout = TextLayout::new(
-                &layout_cache,
-                ctx.font_cache().text_layout_system(),
-                &TEST_STYLES,
-                800.,
-            );
+            let text_layout =
+                TextLayout::new(ctx.font_cache().text_layout_system(), &TEST_STYLES, 800.);
             let block = mermaid_code_block("graph TD\nA --> B\n");
             let options = RenderLayoutOptions {
                 render_mermaid_diagrams: false,
@@ -840,9 +800,7 @@ fn test_layout_text_block_uses_rich_table_when_flag_enabled() {
     App::test((), |app| async move {
         app.read(|ctx| {
             let _flag = FeatureFlag::MarkdownTables.override_enabled(true);
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -873,9 +831,7 @@ fn test_layout_text_block_uses_plain_text_when_flag_disabled() {
     App::test((), |app| async move {
         app.read(|ctx| {
             let _flag = FeatureFlag::MarkdownTables.override_enabled(false);
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -904,9 +860,7 @@ fn test_layout_text_block_uses_plain_text_when_flag_disabled() {
 fn test_layout_table_block_caches_cell_text_frames() {
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -953,9 +907,7 @@ fn test_layout_table_block_caches_cell_text_frames() {
 fn test_layout_table_block_clamps_cell_width_to_max() {
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1013,10 +965,8 @@ fn test_layout_table_block_clamps_cell_width_to_max() {
 #[test]
 fn test_table_inline_style_runs_apply_header_bold_default() {
     App::test((), |app| async move {
-        let layout_cache = LayoutCache::new();
         app.read(|ctx| {
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1051,10 +1001,8 @@ fn test_table_inline_style_runs_apply_header_bold_default() {
 #[test]
 fn test_table_inline_style_runs_preserve_markdown_cell_styles() {
     App::test((), |app| async move {
-        let layout_cache = LayoutCache::new();
         app.read(|ctx| {
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1132,9 +1080,7 @@ fn test_layout_code_block_urls() {
         ];
 
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1280,9 +1226,7 @@ fn test_layout_delta_chunk_boundary_preserves_order_hidden_collapsing_and_traili
     // MAX_LAYOUT_TASKS_PER_PARALLEL_CHUNK), with a hidden run that straddles a chunk boundary.
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1375,9 +1319,7 @@ fn test_layout_delta_single_chunk_matches_direct_layout() {
     // ends in one.
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1458,9 +1400,7 @@ fn test_layout_delta_block_location_is_global_across_chunk_boundaries() {
     // makes a chunk-local-index regression directly observable.
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1557,9 +1497,7 @@ fn test_layout_delta_trailing_newline_carries_over_when_final_chunk_fully_fails(
     // contributed nothing.
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
@@ -1636,9 +1574,7 @@ fn test_layout_temporary_blocks_preserves_order_across_chunk_boundary() {
     // their original order.
     App::test((), |app| async move {
         app.read(|ctx| {
-            let layout_cache = LayoutCache::new();
             let text_layout = TextLayout::new(
-                &layout_cache,
                 ctx.font_cache().text_layout_system(),
                 &TEST_STYLES,
                 f32::MAX,
