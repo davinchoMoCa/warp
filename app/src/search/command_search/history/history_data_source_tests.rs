@@ -14,9 +14,11 @@ fn truncate_for_fuzzy_match_respects_char_boundaries() {
 
 #[test]
 fn matched_indices_from_truncated_text_stay_valid_against_the_full_text() {
-    // The match sits near the start, well within MAX_FUZZY_MATCH_CHARS, but the full command is
-    // much longer than the cap.
-    let full_command = format!("target{}", "x".repeat(MAX_FUZZY_MATCH_CHARS + 1_000));
+    // A multi-byte prefix ahead of the match makes char and byte offsets diverge: if any layer
+    // in the path (the matcher or the truncation) treated the returned indices as byte offsets
+    // instead of char offsets, indexing `full_chars` with them would land on the wrong
+    // characters here, where an all-ASCII command could not have caught that.
+    let full_command = format!("日本語target{}", "x".repeat(MAX_FUZZY_MATCH_CHARS + 1_000));
     let truncated = truncate_for_fuzzy_match(&full_command, MAX_FUZZY_MATCH_CHARS);
     assert!(truncated.len() < full_command.len());
 
