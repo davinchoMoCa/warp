@@ -11,6 +11,8 @@ mod remote;
 pub(crate) use remote::bundled_skill_snapshot_protos;
 #[cfg(feature = "local_fs")]
 mod bundled;
+#[cfg(feature = "local_fs")]
+pub(crate) use bundled::factory_deferred_repositories_skill_path;
 #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
 pub(crate) use bundled::{BundledSkill, BundledSkillActivation};
 
