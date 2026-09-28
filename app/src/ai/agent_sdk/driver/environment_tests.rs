@@ -31,6 +31,23 @@ fn command_output(stdout: &str, stderr: &str, status: CommandExitStatus) -> Comm
     }
 }
 
+#[test]
+fn clone_error_includes_short_output() {
+    let error = PrepareEnvironmentError::CloneRepo {
+        repo_name: "warpdotdev/warp".to_string(),
+        output: Some("fatal: repository not found".to_string()),
+        identity_diagnostics: CloneFailureIdentityDiagnostics {
+            author: None,
+            credentials: Vec::new(),
+        },
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "Failed to clone warpdotdev/warp: fatal: repository not found\nGit identity diagnostics:\n  Author: unset"
+    );
+}
+
 fn commit_head_override(
     code_forge: RepositoryForge,
     owner: &str,
@@ -1666,6 +1683,7 @@ fn clone_failure_errors_preserve_the_original_failure_before_diagnostics() {
     };
     let clone_error = PrepareEnvironmentError::CloneRepo {
         repo_name: "warpdotdev/warp".to_string(),
+        output: None,
         identity_diagnostics: diagnostics.clone(),
     };
     let checkout_error = PrepareEnvironmentError::CheckoutFailed {
