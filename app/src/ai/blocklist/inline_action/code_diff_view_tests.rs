@@ -125,3 +125,74 @@ fn convert_file_edits_to_file_diffs_bounds_v4a_hunk_content_before_cloning() {
     assert!(!diffs[0].base.content.contains('c'));
     assert!(diffs[0].base.content.len() < 3 * hunk_size);
 }
+
+#[test]
+fn convert_file_edits_to_file_diffs_skips_str_replace_edit_when_replace_is_oversized() {
+    // `search` is tiny; `replace` alone exceeds the ceiling. The budget must be checked against
+    // both fields, not just the one that happens to feed the dummy content.
+    let huge_replace = "y".repeat(MAX_RESTORED_FILE_DIFF_CONTENT_BYTES + 100);
+    let edits = vec![FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+        file: Some("/repo/file.rs".to_string()),
+        search: Some("1|small search\n".to_string()),
+        replace: Some(huge_replace),
+    })];
+
+    let diffs = convert_file_edits_to_file_diffs(edits, &None, &None);
+
+    assert_eq!(diffs.len(), 1);
+    assert!(diffs[0].base.content.is_empty());
+    let DiffType::Update { deltas, .. } = &diffs[0].diff_type else {
+        panic!("expected an Update diff");
+    };
+    assert!(deltas.is_empty());
+}
+
+#[test]
+fn convert_file_edits_to_file_diffs_skips_v4a_hunk_when_new_field_is_oversized() {
+    // `pre_context`, `old`, and `post_context` are tiny; `new` alone exceeds the ceiling. The
+    // budget must account for `new` even though it never feeds the dummy content.
+    let hunk = V4AHunk {
+        change_context: vec![],
+        pre_context: "small".to_string(),
+        old: "small".to_string(),
+        new: "y".repeat(MAX_RESTORED_FILE_DIFF_CONTENT_BYTES + 100),
+        post_context: "small".to_string(),
+    };
+    let edits = vec![FileEdit::Edit(ParsedDiff::V4AEdit {
+        file: Some("/repo/file.rs".to_string()),
+        move_to: None,
+        hunks: vec![hunk],
+    })];
+
+    let diffs = convert_file_edits_to_file_diffs(edits, &None, &None);
+
+    assert_eq!(diffs.len(), 1);
+    assert!(diffs[0].base.content.is_empty());
+}
+
+#[test]
+fn convert_file_edits_to_file_diffs_treats_a_refreshed_file_as_recently_touched() {
+    // file-0 is touched first, then touched again last. A second, later touch must count as
+    // recent -- it must not be evicted as if it were still sitting at its first-touch position.
+    let mut edits: Vec<FileEdit> = vec![create_edit("/repo/file-0.txt", "first touch")];
+    edits.extend(
+        (1..MAX_RESTORED_FILE_DIFF_FILES)
+            .map(|i| create_edit(&format!("/repo/file-{i}.txt"), "content")),
+    );
+    // One more distinct file, so the cap must drop exactly one file.
+    edits.push(create_edit("/repo/file-new.txt", "content"));
+    edits.push(create_edit("/repo/file-0.txt", "second touch"));
+
+    let diffs = convert_file_edits_to_file_diffs(edits, &None, &None);
+
+    let actual: HashSet<String> = diffs.iter().map(|d| d.file_path()).collect();
+    assert_eq!(diffs.len(), MAX_RESTORED_FILE_DIFF_FILES);
+    assert!(
+        actual.contains("/repo/file-0.txt"),
+        "the re-touched file should survive the cap"
+    );
+    assert!(
+        !actual.contains("/repo/file-1.txt"),
+        "file-1 was never refreshed and is now the oldest, so it should be dropped"
+    );
+}

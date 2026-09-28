@@ -2719,9 +2719,11 @@ impl TypedActionView for CodeDiffView {
 /// otherwise reconstruct every one of them into a `FileDiff`.
 const MAX_RESTORED_FILE_DIFF_FILES: usize = 50;
 
-/// Maximum bytes of dummy content accumulated per reconstructed file diff, checked while
-/// accumulating rather than after, so a file with pathologically large or numerous edits can't
-/// grow the reconstruction — and the clones behind it — unbounded.
+/// Maximum bytes of edit content (summed across every relevant field of an edit, not just the
+/// slice used to build display content) accumulated per reconstructed file diff. An edit's full
+/// size is checked against the remaining budget before it is cloned or parsed into a working
+/// representation, so a single oversized edit can't blow the reconstruction's memory footprint
+/// regardless of which of its fields happens to be large.
 const MAX_RESTORED_FILE_DIFF_CONTENT_BYTES: usize = 1_000_000;
 
 /// Returns the largest prefix of `s` that is at most `max_bytes` long and ends on a UTF-8
@@ -2737,6 +2739,18 @@ fn truncate_to_byte_ceiling(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Total bytes across all of a `V4AHunk`'s fields, used to check the content budget before the
+/// hunk is cloned. Includes `new` and `change_context` even though only `pre_context`, `old`,
+/// and `post_context` feed the reconstructed dummy content, since all of them are retained in
+/// the cloned hunk.
+fn v4a_hunk_bytes(hunk: &V4AHunk) -> usize {
+    hunk.pre_context.len()
+        + hunk.old.len()
+        + hunk.new.len()
+        + hunk.post_context.len()
+        + hunk.change_context.iter().map(String::len).sum::<usize>()
+}
+
 /// Converts a list of FileEdits to a list of FileDiffs with mocked content.
 /// For restored FileEdits we don't have access to the actual file content, so we construct
 /// a lossy version of the FileDiff.
@@ -2745,16 +2759,22 @@ pub fn convert_file_edits_to_file_diffs(
     shell_launch_data: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
 ) -> Vec<FileDiff> {
-    // Group file edits by file path, preserving the order files were first touched.
-    let mut edits_by_file: IndexMap<String, Vec<FileEdit>> = IndexMap::new();
-    for edit in file_edits {
-        if let Some(file_path) = edit.file().map(|f| f.to_string()) {
-            edits_by_file.entry(file_path).or_default().push(edit);
-        }
+    // Index file edits by file path without cloning any of them, moving a file to the back of
+    // the map whenever it's touched again so the map's final order reflects last-touched order
+    // rather than first-touched order.
+    let mut edits_by_file: IndexMap<&str, Vec<usize>> = IndexMap::new();
+    for (index, edit) in file_edits.iter().enumerate() {
+        let Some(file_path) = edit.file() else {
+            continue;
+        };
+        let mut indices = edits_by_file.shift_remove(file_path).unwrap_or_default();
+        indices.push(index);
+        edits_by_file.insert(file_path, indices);
     }
 
-    // Keep only the most recently touched files, before any per-file cloning or string
-    // building below.
+    // Keep only the most recently touched files. Nothing is allocated for a discarded file:
+    // `edits_by_file`'s keys borrow from `file_edits`, and an owned path is only produced below,
+    // per retained file.
     let skip_count = edits_by_file
         .len()
         .saturating_sub(MAX_RESTORED_FILE_DIFF_FILES);
@@ -2762,9 +2782,11 @@ pub fn convert_file_edits_to_file_diffs(
     edits_by_file
         .into_iter()
         .skip(skip_count)
-        .filter(|(_, edits)| {
+        .filter_map(|(file_path, indices)| {
+            let edits: Vec<&FileEdit> = indices.iter().map(|&i| &file_edits[i]).collect();
+
             // Filter out files that have no valid edits
-            edits.iter().any(|edit| {
+            let has_valid_edit = edits.iter().any(|edit| {
                 matches!(
                     edit,
                     FileEdit::Edit(_)
@@ -2774,11 +2796,13 @@ pub fn convert_file_edits_to_file_diffs(
                         }
                         | FileEdit::Delete { .. }
                 )
-            })
-        })
-        .map(|(file_path, edits)| {
+            });
+            if !has_valid_edit {
+                return None;
+            }
+
             let path =
-                host_native_absolute_path(&file_path, shell_launch_data, current_working_directory);
+                host_native_absolute_path(file_path, shell_launch_data, current_working_directory);
 
             // Extract search content from file edits to create dummy content
             let mut search_and_replace_diffs = Vec::new();
@@ -2791,18 +2815,28 @@ pub fn convert_file_edits_to_file_diffs(
             // Track if the file should be shown as deleted (explicit delete or move to another file)
             let mut show_as_deleted = false;
 
-            // Bounds the dummy content (and the clones behind it) this file accumulates. Checked
-            // before each edit/hunk is processed, so once exceeded, remaining edits are skipped
-            // rather than processed and discarded afterward.
+            // Bounds the edit content this file accumulates. Every edit's (or hunk's) full size
+            // is checked against the remaining budget before it's cloned or parsed into a
+            // working representation, so an oversized edit is skipped rather than materialized
+            // and discarded (or worse, kept) after the fact.
             let mut content_bytes_used = 0usize;
 
-            for edit in &edits {
+            for edit in edits {
                 if content_bytes_used >= MAX_RESTORED_FILE_DIFF_CONTENT_BYTES {
                     break;
                 }
                 match edit {
                     FileEdit::Edit(parsed_diff) => match parsed_diff {
-                        ParsedDiff::StrReplaceEdit { .. } => {
+                        ParsedDiff::StrReplaceEdit {
+                            search, replace, ..
+                        } => {
+                            let edit_bytes = search.as_deref().map_or(0, str::len)
+                                + replace.as_deref().map_or(0, str::len);
+                            if content_bytes_used.saturating_add(edit_bytes)
+                                > MAX_RESTORED_FILE_DIFF_CONTENT_BYTES
+                            {
+                                continue;
+                            }
                             if let Ok(search_replace) =
                                 SearchAndReplace::try_from(parsed_diff.clone())
                             {
@@ -2815,7 +2849,7 @@ pub fn convert_file_edits_to_file_diffs(
                                     max_line_number = max_line_number.max(range.end);
                                 }
 
-                                content_bytes_used += search_content.len();
+                                content_bytes_used += edit_bytes;
                                 // Store the search content with its line range for later use
                                 search_blocks_with_ranges.push((line_range, search_content));
 
@@ -2830,12 +2864,17 @@ pub fn convert_file_edits_to_file_diffs(
                             }
 
                             // Build dummy content from V4A hunks using pre_context + old + post_context.
-                            // Hunks are only cloned into `v4a_hunks` while under budget, so a file with
-                            // many hunks doesn't pay for cloning ones beyond it.
+                            // Each hunk's full size (including fields that don't feed dummy content,
+                            // like `new`) is checked against the budget before the hunk is cloned.
                             for hunk in hunks {
-                                if content_bytes_used >= MAX_RESTORED_FILE_DIFF_CONTENT_BYTES {
-                                    break;
+                                let hunk_bytes = v4a_hunk_bytes(hunk);
+                                if content_bytes_used.saturating_add(hunk_bytes)
+                                    > MAX_RESTORED_FILE_DIFF_CONTENT_BYTES
+                                {
+                                    continue;
                                 }
+                                content_bytes_used += hunk_bytes;
+
                                 let mut hunk_content = String::new();
                                 if !hunk.pre_context.is_empty() {
                                     hunk_content.push_str(&hunk.pre_context);
@@ -2855,7 +2894,6 @@ pub fn convert_file_edits_to_file_diffs(
                                 // We don't have line numbers for V4A hunks in restored state,
                                 // so use None for the range
                                 if !hunk_content.is_empty() {
-                                    content_bytes_used += hunk_content.len();
                                     search_blocks_with_ranges.push((None, hunk_content));
                                 }
                                 v4a_hunks.push(hunk.clone());
@@ -2967,7 +3005,11 @@ pub fn convert_file_edits_to_file_diffs(
                 }
             }
 
-            FileDiff::new(dummy_content, path, DiffType::update(applied_diffs, None))
+            Some(FileDiff::new(
+                dummy_content,
+                path,
+                DiffType::update(applied_diffs, None),
+            ))
         })
         .collect()
 }
