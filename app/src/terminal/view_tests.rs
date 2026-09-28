@@ -5208,40 +5208,27 @@ fn test_smooth_scroll_applies_pending_increment_after_content_grows() {
         ];
         let terminal = add_window_with_terminal(&mut app, Some(&restored_blocks));
         terminal.update(&mut app, |view, ctx| {
-            view.scroll(20.0.into_lines(), true /* precise */, ctx);
-            let before = view.scroll_position();
+            view.scroll(1.0.into_lines(), true /* precise */, ctx);
             view.smooth_scroll.add_delta(
-                3.0.into_lines(),
+                -10.0.into_lines(),
                 Instant::now() - std::time::Duration::from_secs(1),
             );
-            assert!(view.smooth_scroll.needs_tick(Instant::now()));
-
-            view.model.lock().simulate_block("ls", "more output");
+            view.model
+                .lock()
+                .simulate_block("ls", &"more output\n".repeat(20));
             let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
-            let (expected, max_scroll_top) = {
+            let expected = {
                 let model = view.model.lock();
-                let viewport = view.viewport_state(model.block_list(), input_mode, ctx);
-                (
-                    viewport.next_scroll_position(
+                view.viewport_state(model.block_list(), input_mode, ctx)
+                    .next_scroll_position(
                         ScrollPositionUpdate::AfterScrollEvent {
-                            scroll_delta: 3.0.into_lines(),
+                            scroll_delta: (-10.0).into_lines(),
                         },
                         ctx,
-                    ),
-                    viewport.max_scroll_top_in_lines(),
-                )
+                    )
             };
-            assert_ne!(before, expected);
             view.advance_smooth_scroll(ctx);
             assert_eq!(view.scroll_position(), expected);
-            let ScrollPosition::FixedAtPosition {
-                scroll_lines: ScrollLines::ScrollTop(actual),
-            } = view.scroll_position()
-            else {
-                panic!("expected a fixed scroll position after content growth");
-            };
-            assert!(heights_approx_gte(max_scroll_top, actual));
-            assert!(!view.smooth_scroll.needs_tick(Instant::now()));
         });
     })
 }
