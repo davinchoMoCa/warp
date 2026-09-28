@@ -1,60 +1,31 @@
-//! A deterministic, time-based controller that eases a scroll position toward an exact target
-//! for discrete (non-precise) scroll input, instead of jumping immediately. Kept outside the GUI
-//! element tree so both generic WarpUI scrollables and terminal scrollback can share it.
-//!
-//! ## Model
-//! - Motion follows a cubic bezier ease-in-out (control points `(0.42, 0)` and `(0.58, 1)`, the
-//!   same shape as CSS's `ease-in-out` keyword): a notch from rest eases in before decelerating
-//!   into the target, rather than launching at full speed.
-//! - Duration is inversely proportional to the delta's magnitude: a small notch gets a longer,
-//!   gentler animation, while a large one collapses toward a shorter, snappier one. See
-//!   [`inverse_delta_duration`].
-//! - A same-direction delta arriving mid-flight *retargets* the running segment rather than
-//!   stacking a second one on top of it, reshaping the curve so its start velocity matches the
-//!   outgoing velocity -- motion stays continuous across the retarget instead of visibly
-//!   restarting. [`velocity_preserving_duration`] bounds how long that reshaping may take, so a
-//!   fast-moving retarget with only a small remaining distance can't overshoot past the target.
-//! - Opposite-direction input discards the unrendered remainder and reverses immediately from
-//!   the currently displayed position.
-//!
-//! This mirrors Chromium's wheel-scroll animation, `cc::ScrollOffsetAnimationCurve`
-//! (`cc/animation/scroll_offset_animation_curve.cc`).
+//! Time-based, exact-target scrolling for discrete wheel input, shared by GUI scrollables and
+//! terminal scrollback. The inverse-delta duration ramp and velocity-bound retargeting follow
+//! Chromium's `cc::ScrollOffsetAnimationCurve` (`cc/animation/scroll_offset_animation_curve.cc`).
 
 use std::time::Duration;
 
 use instant::Instant;
 use warp_features::FeatureFlag;
 
-/// Cadence at which an active [`SmoothScrollController`] requests another repaint. Comfortably
-/// exceeds common display refresh rates so this is never the bottleneck on frame cadence.
+/// Cadence for active smooth-scroll frames.
 pub const SMOOTH_SCROLL_FRAME_INTERVAL: Duration = Duration::from_millis(8);
 
-/// Pixels-per-line for converting a non-precise (line-based) scroll delta into the
-/// pixel-equivalent units this controller operates in. Chosen over the OS-reported ~10px/line
-/// default because that reads as too slow.
+/// Pixels per line-based wheel unit; the OS-reported ~10px/line feels too slow.
 pub const NUM_PIXELS_PER_LINE: f32 = 40.0;
 
-/// Whether a scroll input should be animated by a [`SmoothScrollController`] rather than applied
-/// immediately: `precise` input always applies immediately, and disabling
-/// `FeatureFlag::SmoothScrolling` applies everything immediately.
+/// Animates only non-precise input while `FeatureFlag::SmoothScrolling` is enabled.
 pub fn should_animate_scroll(precise: bool) -> bool {
     !precise && FeatureFlag::SmoothScrolling.is_enabled()
 }
 
-/// A wheel delta at or below [`INVERSE_DELTA_RAMP_START_PX`] gets [`INVERSE_DELTA_MAX_DURATION`]
-/// (slow, gentle); a delta at or above [`INVERSE_DELTA_RAMP_END_PX`] gets
-/// [`INVERSE_DELTA_MIN_DURATION`] (fast, snappy); between them, duration ramps linearly.
 const INVERSE_DELTA_RAMP_START_PX: f32 = 120.0;
 const INVERSE_DELTA_RAMP_END_PX: f32 = 480.0;
 const INVERSE_DELTA_MAX_DURATION: Duration = Duration::from_millis(200);
 const INVERSE_DELTA_MIN_DURATION: Duration = Duration::from_millis(100);
 
-/// Never let a retarget's reshaped duration collapse below this floor (roughly one frame at
-/// 60Hz), even if the velocity-based bound would otherwise push it toward zero.
+/// Avoid a retarget shorter than one 60Hz frame.
 const MIN_RETARGET_DURATION: Duration = Duration::from_millis(16);
 
-/// Duration for a scroll delta, given its absolute magnitude in pixels, ramping linearly
-/// between the two ends of the ramp.
 fn inverse_delta_duration(abs_delta: f32) -> Duration {
     if abs_delta <= INVERSE_DELTA_RAMP_START_PX {
         return INVERSE_DELTA_MAX_DURATION;
@@ -70,19 +41,11 @@ fn inverse_delta_duration(abs_delta: f32) -> Duration {
     Duration::from_secs_f32(max + (min - max) * t)
 }
 
-/// The x-coordinate of a bezier curve's first control point, fixed across every curve this
-/// controller produces (both the standard ease-in-out shape and every velocity-preserving
-/// reshape). Only the first control point's y-coordinate varies, to encode a desired starting
-/// velocity; see [`CubicBezier::with_initial_slope`].
 const BEZIER_X1: f32 = 0.42;
-/// The second control point, fixed across every curve this controller produces: motion always
-/// eases out to a stop at the target (the controller always knows the final rest position it's
-/// animating toward), matching the tail of CSS's `ease-in-out`.
 const BEZIER_X2: f32 = 0.58;
 const BEZIER_Y2: f32 = 1.0;
 
-/// The standard ease-in-out timing function -- the same curve as CSS's `ease-in-out` keyword --
-/// used for a fresh segment starting from rest (zero initial velocity).
+/// CSS `ease-in-out` for motion from rest.
 const EASE_IN_OUT: CubicBezier = CubicBezier {
     x1: BEZIER_X1,
     y1: 0.0,
@@ -90,14 +53,10 @@ const EASE_IN_OUT: CubicBezier = CubicBezier {
     y2: BEZIER_Y2,
 };
 
-/// Clamp on a reshaped curve's initial slope, preventing overshoot past `y = 1` before `t = 1`.
-/// Spot-checked numerically to keep the curve monotonic at this value.
+/// Keep retarget curves monotonic without overshoot.
 const MAX_INITIAL_SLOPE_Y1: f32 = 1.0;
 
-/// A cubic bezier timing function mapping normalized time (`x`, always in `[0, 1]`) to
-/// normalized progress (`y`), evaluated the same way CSS's `cubic-bezier()` is: by numerically
-/// solving `x(t) = x_input` for the bezier parameter `t` (Newton-Raphson, falling back to
-/// bisection if it doesn't converge), then returning `y(t)`.
+/// Maps normalized time to progress by solving the cubic bezier's x-coordinate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct CubicBezier {
     x1: f32,
@@ -107,15 +66,8 @@ struct CubicBezier {
 }
 
 impl CubicBezier {
-    /// A curve with the same tail shape (easing out to a stop at the target) as
-    /// [`EASE_IN_OUT`], but whose start is reshaped so its initial slope (`dy/dx` at `x = 0`)
-    /// matches `initial_slope`, clamped to stay within [`MAX_INITIAL_SLOPE_Y1`] once expressed
-    /// as this curve's first control point.
-    ///
-    /// For a bezier anchored at `(0, 0)`, the slope at `t = 0` is `y1 / x1` (both the `x` and
-    /// `y` component derivatives at `t = 0` are proportional to `x1` and `y1` respectively).
-    /// Holding `x1` fixed and solving for `y1` gives a simple, well-defined way to encode a
-    /// desired starting slope without needing to re-derive the whole curve shape.
+    /// At the origin, `dy/dx = y1/x1`; vary `y1` to match the outgoing velocity while keeping
+    /// the ease-out tail fixed.
     fn with_initial_slope(initial_slope: f32) -> Self {
         let y1 = (initial_slope * BEZIER_X1).clamp(0.0, MAX_INITIAL_SLOPE_Y1);
         Self {
@@ -152,12 +104,10 @@ impl CubicBezier {
         Self::sample_component_derivative(t, 0.0, self.y1, self.y2, 1.0)
     }
 
-    /// Solves `x(t) = x_input` for `t`, via Newton-Raphson with a bisection fallback for
-    /// robustness (standard technique for evaluating CSS-style cubic-bezier timing functions).
+    /// Solves `x(t) = x_input`, falling back to bisection if Newton-Raphson stalls.
     fn solve_t_for_x(&self, x_input: f32) -> f32 {
         let x_input = x_input.clamp(0.0, 1.0);
 
-        // Newton-Raphson, starting from the linear guess.
         let mut t = x_input;
         for _ in 0..8 {
             let x = self.sample_x(t) - x_input;
@@ -172,8 +122,7 @@ impl CubicBezier {
             t = t.clamp(0.0, 1.0);
         }
 
-        // Fallback: bisection, guaranteed to converge since sample_x is monotonic on [0, 1] for
-        // control points with x1, x2 in [0, 1].
+        // x(t) is monotonic for these control points, so bisection converges.
         let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
         for _ in 0..30 {
             let mid = (lo + hi) / 2.0;
@@ -187,8 +136,6 @@ impl CubicBezier {
     }
 }
 
-/// A single eased motion from `start_position` (at `start_velocity`) to `target` (always ending
-/// at rest), over `duration`.
 #[derive(Debug, Clone, Copy)]
 struct Segment {
     start: Instant,
@@ -223,9 +170,6 @@ impl Segment {
         self.sample(now).0
     }
 
-    /// Position and instantaneous velocity (position units per second) at `now`, solving the
-    /// bezier parameter `t` only once for both rather than twice (as separate `position`/
-    /// `velocity` calls would).
     fn sample(&self, now: Instant) -> (f32, f32) {
         let delta = self.target - self.start_position;
         let duration_secs = self.duration.as_secs_f32();
@@ -250,7 +194,7 @@ impl Segment {
     }
 }
 
-/// The fudge factor compensating for the ease-out tail of the curve.
+/// Chromium's ease-out-tail allowance in the velocity duration bound.
 const VELOCITY_DURATION_BOUND_FACTOR: f32 = 2.5;
 
 /// Caps a retarget's duration so a fast-moving animation with a small remaining distance can't
@@ -271,29 +215,17 @@ fn velocity_based_duration_bound(remaining_delta: f32, current_velocity: f32) ->
     )
 }
 
-/// Chooses the duration for a same-direction retarget of `remaining_delta` (the distance still
-/// left to travel to the new target, from the currently displayed position) while the
-/// controller is already moving at `current_velocity`: the same [`inverse_delta_duration`]
-/// every fresh notch gets, bounded by [`velocity_based_duration_bound`].
 fn velocity_preserving_duration(remaining_delta: f32, current_velocity: f32) -> Duration {
     let base = inverse_delta_duration(remaining_delta.abs());
     let bound = velocity_based_duration_bound(remaining_delta, current_velocity);
     base.min(bound).max(MIN_RETARGET_DURATION)
 }
 
-/// Animates a single scroll axis toward an exact target position. See the module-level docs for
-/// the model.
-///
-/// The controller is a pure function of injected time: every method that depends on "now" takes
-/// an explicit [`Instant`] rather than reading the wall clock, which keeps it deterministic and
-/// testable.
+/// Animates one scroll axis toward an exact target using caller-provided time.
 #[derive(Debug, Clone, Default)]
 pub struct SmoothScrollController {
-    /// The settled position, used whenever there's no active segment.
     committed: f32,
-    /// The single in-flight motion, if any.
     segment: Option<Segment>,
-    /// The displayed position as of the last [`Self::take_increment`] call. See its doc comment.
     last_taken: f32,
 }
 
@@ -306,7 +238,6 @@ impl SmoothScrollController {
         }
     }
 
-    /// Folds a completed segment into `committed`, if there is one. Idempotent.
     fn settle_if_complete(&mut self, now: Instant) {
         if let Some(segment) = self.segment
             && segment.is_complete(now)
@@ -326,8 +257,7 @@ impl SmoothScrollController {
         }
     }
 
-    /// The exact position this controller is animating toward, ignoring the animation's current
-    /// progress (unlike [`Self::displayed_position`]).
+    /// The exact destination, regardless of current animation progress.
     pub fn target(&self) -> f32 {
         self.segment
             .map_or(self.committed, |segment| segment.target)
@@ -341,18 +271,8 @@ impl SmoothScrollController {
         self.segment.is_some()
     }
 
-    /// Adds a discrete scroll contribution of `delta`, starting at `now`.
-    ///
-    /// A `delta` in the same direction as the controller's current motion *retargets* the
-    /// running segment: the distance still left to travel grows by `delta`, and the curve is
-    /// reshaped so its starting velocity matches the outgoing segment's velocity at `now`,
-    /// keeping velocity continuous across the retarget rather than restarting from a fresh
-    /// zero-velocity ease-in. See [`velocity_preserving_duration`] for how the new segment's
-    /// duration is chosen.
-    ///
-    /// A `delta` in the opposite direction discards the unrendered remainder of the current
-    /// motion: the currently displayed position becomes the new settled base, then a fresh
-    /// segment eases from there (at zero velocity).
+    /// Adds a delta, preserving velocity on same-direction retargets. Reversals discard pending
+    /// movement and restart from the displayed position at rest.
     pub fn add_delta(&mut self, delta: f32, now: Instant) {
         if delta == 0.0 {
             return;
@@ -361,7 +281,6 @@ impl SmoothScrollController {
         self.settle_if_complete(now);
 
         let Some(segment) = self.segment else {
-            // Starting from rest: a fresh segment, eased in from zero velocity.
             let target = self.committed + delta;
             self.segment = Some(Segment {
                 start: now,
@@ -377,7 +296,6 @@ impl SmoothScrollController {
         let remaining = segment.target - current_position;
 
         if remaining != 0.0 && remaining.signum() != delta.signum() {
-            // Opposite direction: reverse from the currently displayed position.
             self.committed = current_position;
             let target = current_position + delta;
             self.segment = Some(Segment {
@@ -390,7 +308,6 @@ impl SmoothScrollController {
             return;
         }
 
-        // Same direction: retarget the running segment, preserving its current velocity.
         let new_target = segment.target + delta;
         let new_remaining = new_target - current_position;
         let duration = velocity_preserving_duration(new_remaining, current_velocity);
@@ -403,11 +320,8 @@ impl SmoothScrollController {
         });
     }
 
-    /// Cancels any in-flight animation, settling at the currently displayed position, and
-    /// returns that position. Also resyncs [`Self::take_increment`]'s baseline to that position,
-    /// so a caller that applies a direct scroll immediately after cancelling (rather than
-    /// through the incremental mechanism) doesn't see a stale jump reported on the next
-    /// `take_increment` call.
+    /// Cancels at and returns the displayed position. Resets the incremental baseline so direct
+    /// scrolling does not inherit unapplied movement.
     pub fn cancel(&mut self, now: Instant) -> f32 {
         let displayed = self.displayed_position(now);
         self.committed = displayed;
@@ -416,17 +330,16 @@ impl SmoothScrollController {
         displayed
     }
 
-    /// Immediately jumps to `position`, cancelling any in-flight animation and resyncing
-    /// [`Self::take_increment`]'s baseline, for the same reason [`Self::cancel`] does.
+    /// Jumps to `position`, cancels animation, and resets the incremental baseline.
     pub fn set_position_immediately(&mut self, position: f32) {
         self.committed = position;
         self.segment = None;
         self.last_taken = position;
     }
 
-    /// Returns the change in [`Self::displayed_position`] since the last call to this method (or
-    /// since construction, or the last [`Self::cancel`]/[`Self::set_position_immediately`]),
-    /// settling a completed segment as a side effect like [`Self::displayed_position`].
+    /// Emits movement since the last `take_increment`, construction, or baseline reset. Settles
+    /// completed segments as a side effect; a final call is still required after
+    /// [`Self::is_animating`] first returns false to emit the remaining distance.
     pub fn take_increment(&mut self, now: Instant) -> f32 {
         let current = self.displayed_position(now);
         let increment = current - self.last_taken;
