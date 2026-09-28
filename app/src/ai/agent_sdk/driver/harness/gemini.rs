@@ -88,7 +88,11 @@ impl ThirdPartyHarness for GeminiHarness {
                 workspace_root,
                 warp_isolation_platform::detect().is_some(),
                 true,
-            );
+            )
+            .map_err(|error| AgentDriverError::HarnessConfigSetupFailed {
+                harness: self.cli_agent().command_prefix().to_owned(),
+                error,
+            })?;
             super::skill_dirs_publish::exclude_published_skill_paths_from_git(
                 harness_working_dir,
                 &published,
