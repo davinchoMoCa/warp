@@ -416,7 +416,7 @@ pub(crate) fn build_deferred_repos_instruction(
                 repo.repo
             )
         } else {
-            let target = working_dir.join(&repo.repo).to_string_lossy().into_owned();
+            let target = deferred_repo_target(working_dir, &repo.repo);
             format!("- {identity} — {clone_url}; preferred target: {target}")
         }
     });
@@ -426,6 +426,18 @@ pub(crate) fn build_deferred_repos_instruction(
          When needed, read the built-in factory-deferred-repositories skill before cloning.",
         entries.collect::<Vec<_>>().join("\n\n")
     ))
+}
+
+/// Renders the preferred on-demand clone target for `repo_name` under `working_dir`, joined
+/// with a POSIX separator regardless of the host platform. The agent runs this target through
+/// its own POSIX shell (`test`/`git clone`) per the factory-deferred-repositories skill, so a
+/// host-native `Path::join` would emit backslashes on a Windows client and break that command,
+/// even though `working_dir` itself already names a path inside the run's session.
+fn deferred_repo_target(working_dir: &Path, repo_name: &str) -> String {
+    format!(
+        "{}/{repo_name}",
+        working_dir.to_string_lossy().trim_end_matches('/')
+    )
 }
 
 /// Returns a display string naming every other repository (eager or deferred) that shares
