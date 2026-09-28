@@ -32,7 +32,7 @@ pub use execute::{
     RequestFileEditsTelemetryEvent, RunAgentsExecutor, RunAgentsExecutorEvent,
     RunAgentsSpawningSnapshot, ShellCommandExecutor, ShellCommandExecutorEvent, StartAgentExecutor,
     StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest, StartAgentRequestId,
-    read_local_file_context,
+    TEAM_CHANGED_DURING_CHILD_LAUNCH_ERROR, read_local_file_context,
 };
 pub(crate) use execute::{
     FileReadResult, MalformedFinalLineProxyEvent, apply_edits, coerce_integer_args,
@@ -70,6 +70,7 @@ use crate::ai::get_relevant_files::controller::GetRelevantFilesController;
 use crate::terminal::TerminalModel;
 use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::model_events::ModelEventDispatcher;
+use crate::workspaces::user_workspaces::TeamContextResolver;
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
 
 /// The status of an action from an AI output.
@@ -263,6 +264,7 @@ impl BlocklistAIActionModel {
         model_event_dispatcher: &ModelHandle<ModelEventDispatcher>,
         get_relevant_files_controller: ModelHandle<GetRelevantFilesController>,
         terminal_view_id: EntityId,
+        team_context_resolver: TeamContextResolver,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         let executor = ctx.add_model(|ctx| {
@@ -272,6 +274,7 @@ impl BlocklistAIActionModel {
                 model_event_dispatcher,
                 get_relevant_files_controller,
                 terminal_view_id,
+                team_context_resolver,
                 ctx,
             )
         });

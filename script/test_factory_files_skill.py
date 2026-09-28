@@ -75,9 +75,21 @@ class _FakeServer:
     def authorization(self) -> str:
         return self._httpd.authorization
 
+    def request_count(self) -> int:
+        return self._httpd.request_count
+
 
 @contextlib.contextmanager
-def fake_server(validate_body, validate_status: int = 200, raw_body: bytes | None = None):
+def fake_server(
+    validate_body,
+    validate_status: int = 200,
+    raw_body: bytes | None = None,
+    reject_authenticated_status: int | None = None,
+):
+    """reject_authenticated_status answers that status whenever a request carries
+    an Authorization header, regardless of validate_status, so a test can prove
+    a credentialed request is retried without one."""
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):  # keep the corpus output readable
             pass
@@ -86,12 +98,17 @@ def fake_server(validate_body, validate_status: int = 200, raw_body: bytes | Non
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
             self.server.submitted_files.extend(payload.get("files", []))
-            self.server.authorization = self.headers.get("Authorization", "")
+            authorization = self.headers.get("Authorization", "")
+            self.server.authorization = authorization
+            self.server.request_count += 1
+            status = validate_status
+            if reject_authenticated_status is not None and authorization:
+                status = reject_authenticated_status
             if raw_body is not None:
                 encoded = raw_body
             else:
                 encoded = json.dumps(validate_body).encode("utf-8")
-            self.send_response(validate_status)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
@@ -100,6 +117,7 @@ def fake_server(validate_body, validate_status: int = 200, raw_body: bytes | Non
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     httpd.submitted_files = []
     httpd.authorization = ""
+    httpd.request_count = 0
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -110,15 +128,42 @@ def fake_server(validate_body, validate_status: int = 200, raw_body: bytes | Non
         thread.join(timeout=5)
 
 
-def run_validator(root: Path, server_url: str, api_key: str = "", extra: list[str] | None = None):
+SERVER_ROOT_VARIABLES = ("WARP_SERVER_ROOT", "WARP_SERVER_ROOT_URL")
+
+
+def run_validator(
+    root: Path,
+    server_url: str | None = None,
+    api_key: str = "",
+    extra: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
+):
+    """Run the validator against a server the caller named.
+
+    server_url is optional only so a check can name the server through the
+    environment instead. One of the two is required: with neither, the
+    validator would fall through to its production default and post a real
+    tree to app.warp.dev from a test run.
+    """
+    if server_url is None and not set(extra_env or {}) & set(SERVER_ROOT_VARIABLES):
+        raise RuntimeError(
+            "a check must name the fake server, via server_url or a server-root "
+            "variable in extra_env; otherwise the validator reaches production"
+        )
     environment = os.environ.copy()
     environment.pop("WARP_API_KEY", None)
-    environment.pop("WARP_SERVER_ROOT", None)
+    for variable in SERVER_ROOT_VARIABLES:
+        environment.pop(variable, None)
     if api_key:
         environment["WARP_API_KEY"] = api_key
+    if extra_env:
+        environment.update(extra_env)
+    args = [sys.executable, str(VALIDATOR), str(root)]
+    if server_url is not None:
+        args += ["--server-root", server_url]
+    args += extra or []
     return subprocess.run(
-        [sys.executable, str(VALIDATOR), str(root), "--server-root", server_url]
-        + (extra or []),
+        args,
         capture_output=True,
         text=True,
         check=False,
@@ -142,27 +187,61 @@ def factory_tree(**files: str):
         shutil.rmtree(root, ignore_errors=True)
 
 
-def assert_submits_only_resource_files() -> None:
-    """Only canonical resource paths are uploaded.
+def assert_submits_resource_files() -> None:
+    """Canonical resources and invalid benchmark YAML paths are uploaded.
 
     Skills can hold anything a repository wants to give an agent, and unrelated
-    files are none of the server's business, so neither is sent.
+    files are none of the server's business, so neither is sent. Invalid
+    benchmark YAML must reach the server so it can report the unsupported path.
     """
     with factory_tree(
         **{
             "automations/nightly/automation.md": "---\nagent: main\n---\nrun\n",
             "runners/linux.yaml": "platform:\n  linux:\n    dockerImage: ubuntu:24.04\n",
             "scorers/tests/scorer.md": "---\nagents: [main]\n---\nRubric.\n",
+            "benchmarks/terminal-bench/suite.yaml": "name: Terminal Bench\nagent: main\n",
+            "benchmarks/terminal-bench/tasks/build.yaml": (
+                "title: Build\nprompt: Build it.\nsuccessCriteria: It builds.\n"
+            ),
+            "webhooks/ci.yaml": "authMode: token\nsecretName: CI_TOKEN\n",
             "skills/helper/SKILL.md": "---\nname: helper\n---\nhelp\n",
             "agents/main/skills/inner/SKILL.md": "---\nname: inner\n---\nhelp\n",
             "README.md": "unrelated",
             "agents/main/notes.txt": "unrelated",
+            "benchmarks/README.md": "unrelated",
+            "benchmarks/terminal-bench/tasks/paused.yaml.disabled": "unrelated",
+            "benchmarks/terminal-bench/notes.yaml": "unsupported benchmark resource path",
+            "benchmarks/terminal-bench/tasks/CON.yaml": "invalid benchmark task slug",
+            "benchmarks/terminal-bench/tasks/wrong.yml": "unsupported benchmark extension",
+            "benchmarks/terminal-bench/tasks/nested/inner.yaml": (
+                "unsupported benchmark resource path"
+            ),
+            # Not a canonical webhook path: the server would not classify a
+            # nested file as a source, so submitting it would be noise.
+            "webhooks/nested/inner.yaml": "authMode: token\n",
         }
     ) as root:
-        with fake_server(CLEAN_RESPONSE) as server:
+        response = {
+            "schema_version": "v1alpha1",
+            "valid": False,
+            "diagnostics": [
+                {
+                    "path": "benchmarks/terminal-bench/notes.yaml",
+                    "line": 1,
+                    "column": 1,
+                    "code": "FF_UNSUPPORTED_PATH",
+                    "message": "unsupported Factory resource path",
+                }
+            ],
+        }
+        with fake_server(response) as server:
             result = run_validator(root, server.url)
-        if result.returncode != EXIT_VALID:
-            raise RuntimeError(f"expected a clean pass, got: {result.stdout}{result.stderr}")
+        if result.returncode != EXIT_DIAGNOSTICS:
+            raise RuntimeError(
+                f"expected an unsupported-path diagnostic, got: {result.stdout}{result.stderr}"
+            )
+        if "FF_UNSUPPORTED_PATH" not in result.stderr:
+            raise RuntimeError(f"the server diagnostic was not relayed: {result.stderr}")
         submitted = {entry["path"] for entry in server.submitted_files()}
         expected = {
             "factory.yaml",
@@ -170,6 +249,13 @@ def assert_submits_only_resource_files() -> None:
             "automations/nightly/automation.md",
             "runners/linux.yaml",
             "scorers/tests/scorer.md",
+            "benchmarks/terminal-bench/suite.yaml",
+            "benchmarks/terminal-bench/tasks/build.yaml",
+            "benchmarks/terminal-bench/notes.yaml",
+            "benchmarks/terminal-bench/tasks/CON.yaml",
+            "benchmarks/terminal-bench/tasks/wrong.yml",
+            "benchmarks/terminal-bench/tasks/nested/inner.yaml",
+            "webhooks/ci.yaml",
         }
         if submitted != expected:
             raise RuntimeError(
@@ -321,6 +407,97 @@ def assert_credentials_are_optional_but_forwarded() -> None:
                 raise RuntimeError(f"the key was not forwarded: {server.authorization()!r}")
 
 
+def assert_401_is_retried_without_the_credential() -> None:
+    """A stale or mismatched WARP_API_KEY must not be able to block validation.
+
+    The endpoint needs no credential. When a forwarded key draws a 401 or 403,
+    the request is retried once, without it, before giving up. The drop is
+    reported, so a rejected key is still visible on a run that then passes.
+    """
+    with factory_tree() as root:
+        with fake_server(CLEAN_RESPONSE, reject_authenticated_status=401) as server:
+            result = run_validator(root, server.url, api_key="wk-1.stale")
+            if result.returncode != EXIT_VALID:
+                raise RuntimeError(f"a stale key should not block validation: {result.stderr}")
+            if server.request_count() != 2:
+                raise RuntimeError(
+                    f"expected a retry without the credential, got {server.request_count()}"
+                )
+            if server.authorization():
+                raise RuntimeError("the retry still carried an Authorization header")
+            if "WARP_API_KEY was rejected" not in result.stderr:
+                raise RuntimeError(f"the dropped credential was not reported: {result.stderr!r}")
+            if DISCLOSURE not in result.stdout:
+                raise RuntimeError("the note displaced the verdict the agent must repeat")
+
+        with fake_server(CLEAN_RESPONSE, reject_authenticated_status=403) as server:
+            result = run_validator(root, server.url, api_key="wk-1.stale")
+            if result.returncode != EXIT_VALID:
+                raise RuntimeError(f"a 403 credential should also be retried: {result.stderr}")
+
+        # No credential is in play, so a 401 is not retried; it is reported.
+        with fake_server(CLEAN_RESPONSE, validate_status=401) as server:
+            result = run_validator(root, server.url)
+            if result.returncode != EXIT_NOT_VALIDATED:
+                raise RuntimeError("an unauthenticated 401 should not be retried into a pass")
+            if server.request_count() != 1:
+                raise RuntimeError(
+                    f"an unauthenticated request should not be retried: {server.request_count()}"
+                )
+
+        # If the retry also fails, the tree is still not validated, and only
+        # one retry is attempted rather than a loop.
+        with fake_server(CLEAN_RESPONSE, validate_status=401) as server:
+            result = run_validator(root, server.url, api_key="wk-1.stale")
+            if result.returncode != EXIT_NOT_VALIDATED:
+                raise RuntimeError("a server that always answers 401 must still report failure")
+            if server.request_count() != 2:
+                raise RuntimeError(f"expected exactly one retry, got {server.request_count()}")
+
+
+def assert_server_root_falls_back_to_the_sandbox_url() -> None:
+    """WARP_SERVER_ROOT_URL is used when WARP_SERVER_ROOT is unset.
+
+    An Oz sandbox exports the server root under this name, not the older
+    WARP_SERVER_ROOT. Without this fallback the validator silently targets
+    production instead of the server the sandbox actually belongs to.
+    """
+    with factory_tree() as root:
+        with fake_server(CLEAN_RESPONSE) as server:
+            result = run_validator(root, extra_env={"WARP_SERVER_ROOT_URL": server.url})
+        if result.returncode != EXIT_VALID:
+            raise RuntimeError(
+                f"WARP_SERVER_ROOT_URL was not honored: {result.stdout}{result.stderr}"
+            )
+
+        # WARP_SERVER_ROOT still wins when both are set.
+        with fake_server(CLEAN_RESPONSE) as server:
+            result = run_validator(
+                root,
+                extra_env={
+                    "WARP_SERVER_ROOT": server.url,
+                    "WARP_SERVER_ROOT_URL": "http://127.0.0.1:9",
+                },
+            )
+        if result.returncode != EXIT_VALID:
+            raise RuntimeError("WARP_SERVER_ROOT should take precedence over WARP_SERVER_ROOT_URL")
+
+        # --server-root still wins over both environment variables.
+        with fake_server(CLEAN_RESPONSE) as server:
+            result = run_validator(
+                root,
+                server.url,
+                extra_env={
+                    "WARP_SERVER_ROOT": "http://127.0.0.1:9",
+                    "WARP_SERVER_ROOT_URL": "http://127.0.0.1:9",
+                },
+            )
+        if result.returncode != EXIT_VALID:
+            raise RuntimeError(
+                "--server-root should take precedence over both environment variables"
+            )
+
+
 def assert_symlinked_resources_are_refused() -> None:
     """A symlinked resource is reported and never uploaded.
 
@@ -455,11 +632,16 @@ def assert_packaged_skill_matches() -> None:
 
 
 CHECKS = (
-    ("only resource files are submitted", assert_submits_only_resource_files),
+    ("resource files are submitted", assert_submits_resource_files),
     ("the server's verdict is relayed verbatim", assert_reports_the_servers_verdict),
     ("deferred resolutions are surfaced", assert_surfaces_deferred_resolutions),
     ("an unreached verdict is never a pass", assert_unreached_verdicts_are_never_a_pass),
     ("credentials are optional but forwarded", assert_credentials_are_optional_but_forwarded),
+    ("a 401/403 is retried without the credential", assert_401_is_retried_without_the_credential),
+    (
+        "WARP_SERVER_ROOT_URL is a fallback server root",
+        assert_server_root_falls_back_to_the_sandbox_url,
+    ),
     ("symlinked resources are refused", assert_symlinked_resources_are_refused),
     ("oversized trees are reported", assert_oversized_trees_are_reported),
     ("json output never implies a verdict", assert_json_output_never_implies_a_verdict),

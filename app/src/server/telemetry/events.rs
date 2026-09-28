@@ -11,6 +11,7 @@ use warp_core::interval_timer::TimingDataPoint;
 use warp_core::telemetry::{
     EnablementState, TelemetryEvent as TelemetryEventTrait, TelemetryEventDesc,
 };
+pub use warp_terminal::ImageProtocol;
 use warpui::keymap::Keystroke;
 use warpui::notification::{NotificationSendError, RequestPermissionsOutcome};
 use warpui::rendering::ThinStrokes;
@@ -468,6 +469,7 @@ pub enum CLIAgentType {
     Hermes,
     Vibe,
     Antigravity,
+    Grok,
     /// Warp's own headless TUI, targeted by the code review panel as a CLI-agent-equivalent destination.
     WarpTui,
     Unknown,
@@ -527,7 +529,6 @@ pub enum CommandSearchResultType {
     Workflow,
     OpenWarpAI,
     TranslateUsingWarpAI,
-    Notebook,
     EnvVarCollection,
     ViewInWarpDrive,
     AIQuery,
@@ -540,7 +541,6 @@ impl From<&CommandSearchItemAction> for CommandSearchResultType {
         match action {
             AcceptHistory(_) | ExecuteHistory(_) => Self::History,
             AcceptWorkflow(_) => Self::Workflow,
-            AcceptNotebook(_) => Self::Notebook,
             AcceptEnvVarCollection(_) => Self::EnvVarCollection,
             OpenWarpAI => Self::OpenWarpAI,
             TranslateUsingWarpAI => Self::TranslateUsingWarpAI,
@@ -972,12 +972,6 @@ pub enum AgentModeCitation {
     },
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
-pub enum ImageProtocol {
-    Kitty,
-    ITerm,
-}
-
 #[derive(Clone, Copy, Debug, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum InputUXChangeOrigin {
@@ -1005,6 +999,7 @@ pub enum AIAgentInput {
     EventsFromAgents { event_count: usize },
     PassiveSuggestionResult,
     OrchestrationConfigUpdate,
+    AgentWake,
 }
 
 impl From<FullAIAgentInput> for AIAgentInput {
@@ -1045,6 +1040,7 @@ impl From<FullAIAgentInput> for AIAgentInput {
             },
             FullAIAgentInput::PassiveSuggestionResult { .. } => Self::PassiveSuggestionResult,
             FullAIAgentInput::OrchestrationConfigUpdate { .. } => Self::OrchestrationConfigUpdate,
+            FullAIAgentInput::AgentWake => Self::AgentWake,
         }
     }
 }
@@ -1169,6 +1165,7 @@ pub enum LoginEventSource {
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryQueuedQueryOrigin {
     InitialCloudMode,
+    SharedSessionInjection,
     QueueSlashCommand,
     AutoQueueToggle,
     LrcAutoQueue,
@@ -1181,6 +1178,7 @@ impl From<QueuedQueryOrigin> for TelemetryQueuedQueryOrigin {
     fn from(origin: QueuedQueryOrigin) -> Self {
         match origin {
             QueuedQueryOrigin::InitialCloudMode => Self::InitialCloudMode,
+            QueuedQueryOrigin::SharedSessionInjection => Self::SharedSessionInjection,
             QueuedQueryOrigin::QueueSlashCommand => Self::QueueSlashCommand,
             QueuedQueryOrigin::AutoQueueToggle => Self::AutoQueueToggle,
             QueuedQueryOrigin::LrcAutoQueue => Self::LrcAutoQueue,
@@ -2088,17 +2086,20 @@ pub enum TelemetryEvent {
     /// This is emitted at the start of the attempt (immediately on click),
     /// before binding the loopback callback server or opening the browser.
     /// It is always followed by a `SuperGrokSubscriptionConnectFinished`
-    /// (success or a short stable error code on failure).
+    /// (success, cancellation, or a short stable error code on failure).
     SuperGrokSubscriptionConnectInitiated,
 
-    /// Outcome (success or failure) of the user attempting to connect their
-    /// SuperGrok / xAI subscription via the OAuth flow in AI settings.
+    /// Outcome (success, cancellation, or failure) of the user attempting to
+    /// connect their SuperGrok / xAI subscription via the OAuth flow in AI
+    /// settings.
     ///
-    /// On failure, `error` contains a short stable error *code* (e.g.
-    /// "bind_failed", "oauth_failed"). The full error chain/body is emitted
-    /// via `safe_error!` at the call site (only the code goes into telemetry).
+    /// On failure or cancellation, `error` contains a short stable error
+    /// *code* (e.g. "bind_failed", "oauth_failed", "cancelled"). The full
+    /// error chain/body is emitted via `safe_error!` at the call site (only
+    /// the code goes into telemetry).
     SuperGrokSubscriptionConnectFinished {
-        /// Short stable error code on failure (e.g. "bind_failed"); absent on success.
+        /// Short stable error code on failure or cancellation (e.g.
+        /// "bind_failed", "cancelled"); absent on success.
         error: Option<String>,
     },
 
@@ -2762,6 +2763,13 @@ pub enum TelemetryEvent {
         client_conversation_id: AIConversationId,
         server_conversation_id: Option<String>,
         ambient_agent_task_id: Option<AmbientAgentTaskId>,
+    },
+    /// Emitted when computer use is enabled for a cloud agent run but the host cannot provide it
+    /// (e.g. no display), so the run's requests omit the computer-use tools. At most once per run.
+    ComputerUseUnavailable {
+        ambient_agent_task_id: AmbientAgentTaskId,
+        /// Whether the client is running inside a sandbox (a Warp-hosted cloud agent).
+        sandboxed: bool,
     },
     /// Emitted when a warp://linear deeplink is opened.
     LinearIssueLinkOpened,
@@ -4659,6 +4667,14 @@ impl TelemetryEvent {
                 "server_conversation_id": server_conversation_id,
                 "ambient_agent_task_id": ambient_agent_task_id.map(|id| id.to_string()),
             })),
+            TelemetryEvent::ComputerUseUnavailable {
+                ambient_agent_task_id,
+                sandboxed,
+            } => Some(json!({
+                "ambient_agent_task_id": ambient_agent_task_id.to_string(),
+                "sandboxed": sandboxed,
+                "os": std::env::consts::OS,
+            })),
             TelemetryEvent::LoginButtonClicked { source }
             | TelemetryEvent::LoginLaterButtonClicked { source }
             | TelemetryEvent::LoginLaterConfirmationButtonClicked { source }
@@ -5125,6 +5141,7 @@ impl TelemetryEvent {
             | TelemetryEvent::CloudAgentCapacityModalUpgradeClicked
             | TelemetryEvent::ComputerUseApproved { .. }
             | TelemetryEvent::ComputerUseCancelled { .. }
+            | TelemetryEvent::ComputerUseUnavailable { .. }
             | TelemetryEvent::RemoteServerBinaryCheck { .. }
             | TelemetryEvent::RemoteServerInstallation { .. }
             | TelemetryEvent::RemoteServerInitialization { .. }
@@ -5668,7 +5685,9 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             | Self::CloudAgentCapacityModalUpgradeClicked => {
                 EnablementState::Flag(FeatureFlag::CloudMode)
             }
-            Self::ComputerUseApproved | Self::ComputerUseCancelled => {
+            Self::ComputerUseApproved
+            | Self::ComputerUseCancelled
+            | Self::ComputerUseUnavailable => {
                 EnablementState::Flag(FeatureFlag::AgentModeComputerUse)
             }
             Self::RemoteServerBinaryCheck
@@ -6220,6 +6239,7 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
             }
             Self::ComputerUseApproved => "ComputerUse.Approved",
             Self::ComputerUseCancelled => "ComputerUse.Cancelled",
+            Self::ComputerUseUnavailable => "ComputerUse.Unavailable",
         }
     }
 
@@ -7048,6 +7068,9 @@ impl TelemetryEventDesc for TelemetryEventDiscriminants {
                 "A RequestComputerUse action was approved (manually or auto-executed)"
             }
             Self::ComputerUseCancelled => "A RequestComputerUse action was cancelled/rejected",
+            Self::ComputerUseUnavailable => {
+                "Computer use was enabled for a cloud agent run but unavailable on the host"
+            }
             Self::RemoteServerBinaryCheck => {
                 "Remote server binary check completed (found, not found, or error)"
             }

@@ -1,5 +1,6 @@
 use super::billing::{BillingCycleUsageHistory, BillingMetadata, BonusGrantsInfo};
 use crate::schema;
+use crate::user::DiscoverableTeamData;
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
 pub struct Workspace {
@@ -8,6 +9,7 @@ pub struct Workspace {
     pub stripe_customer_id: Option<cynic::Id>,
     pub members: Vec<WorkspaceMember>,
     pub teams: Vec<Team>,
+    pub open_teams: Vec<DiscoverableTeamData>,
     pub billing_metadata: BillingMetadata,
     pub bonus_grants_info: BonusGrantsInfo,
     pub billing_cycle_usage_history: Option<BillingCycleUsageHistory>,
@@ -111,6 +113,7 @@ pub struct WorkspaceMember {
     pub uid: cynic::Id,
     pub email: String,
     pub role: MembershipRole,
+    pub is_disabled: bool,
     pub usage_info: WorkspaceMemberUsageInfo,
 }
 
@@ -302,6 +305,7 @@ pub struct Team {
     pub color: Option<String>,
     pub invite_link: Option<String>,
     pub visibility: TeamVisibility,
+    pub feature_model_choice: FeatureModelChoice,
 }
 
 /// Governs which workspace members can discover and join a team. Orthogonal to
@@ -428,6 +432,7 @@ pub struct TeamMember {
     pub uid: cynic::Id,
     pub email: String,
     pub role: MembershipRole,
+    pub is_disabled: bool,
 }
 
 #[derive(cynic::Enum, Clone, Debug, PartialEq, Eq, Copy)]

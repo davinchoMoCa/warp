@@ -49,6 +49,7 @@ use crate::ai::ambient_agents::task::TaskPrincipalInfo;
 use crate::ai::ambient_agents::{AmbientAgentTaskId, cancel_task_with_toast};
 use crate::ai::artifacts::{Artifact, ArtifactButtonsRow, ArtifactButtonsRowEvent};
 use crate::ai::blocklist::BlocklistAIHistoryModel;
+use crate::ai::blocklist::view_util::{UsageLabelKind, format_usage, usage_label};
 use crate::ai::cloud_environments::{AmbientAgentEnvironment, CloudAmbientAgentEnvironment};
 use crate::ai::harness_availability::HarnessAvailabilityModel;
 use crate::ai::harness_display;
@@ -61,7 +62,7 @@ use crate::send_telemetry_from_ctx;
 use crate::server::ids::{ServerId, SyncId};
 use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::ai::AmbientAgentTask;
-#[cfg(not(target_family = "wasm"))]
+use crate::server::team_scope::RequestTeamScope;
 use crate::settings::ai::{AISettings, AISettingsChangedEvent};
 use crate::ui_components::avatar::{Avatar, AvatarContent};
 use crate::ui_components::blended_colors;
@@ -78,6 +79,7 @@ use crate::view_components::copyable_text_field::{
 };
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
 use crate::workspaces::user_profiles::{UserProfileWithUID, UserProfiles};
+use crate::workspaces::user_workspaces::UserWorkspaces;
 
 const FIELD_SPACING: f32 = 16.0;
 const HEADER_SPACING: f32 = 12.0;
@@ -241,6 +243,10 @@ pub struct ConversationDetailsData {
     created_at: Option<DateTime<Local>>,
     /// Total credits spent on the conversation/task.
     credits: Option<f32>,
+    /// Total token count used, when the source provides it.
+    total_tokens: Option<u32>,
+    /// Total server-reported cost in US cents.
+    cost_in_cents: Option<f32>,
     /// Total duration of the conversation.
     run_time: Option<Duration>,
     /// Artifacts created during the conversation (plans, PRs, branches).
@@ -347,6 +353,13 @@ impl ConversationDetailsData {
             .map(|m| Harness::from(m.harness))
             .or(Some(Harness::Oz));
 
+        let usage_totals = conversation.usage_totals();
+        let total_tokens: u32 = conversation
+            .token_usage()
+            .iter()
+            .map(|model| model.warp_tokens + model.byok_tokens + model.custom_endpoint_tokens)
+            .sum();
+
         ConversationDetailsData {
             mode: PanelMode::Conversation {
                 directory,
@@ -361,6 +374,10 @@ impl ConversationDetailsData {
             executor: None,
             created_at,
             credits: Some(conversation.credits_spent()),
+            total_tokens: (total_tokens > 0).then_some(total_tokens),
+            cost_in_cents: usage_totals
+                .charged_usage
+                .map(|usage| usage.total_cost_in_cents()),
             run_time,
             artifacts: conversation.artifacts().to_vec(),
             open_action: None,
@@ -426,6 +443,8 @@ impl ConversationDetailsData {
             created_at: Some(task.created_at.with_timezone(&Local)),
             artifacts: task.artifacts.clone(),
             credits,
+            total_tokens: None,
+            cost_in_cents: task.cost_in_cents(),
             run_time: task.run_time(),
             open_action,
             creator: task
@@ -480,6 +499,9 @@ impl ConversationDetailsData {
             let credits = task
                 .and_then(AmbientAgentTask::credits_used)
                 .or(entry.display.request_usage);
+            let cost_in_cents = task
+                .and_then(AmbientAgentTask::cost_in_cents)
+                .or(entry.display.cost_in_cents);
             let skill_spec = task
                 .and_then(|task| task.agent_config_snapshot.as_ref())
                 .and_then(|config| config.skill_spec.as_ref())
@@ -506,6 +528,8 @@ impl ConversationDetailsData {
                 executor,
                 created_at,
                 credits,
+                total_tokens: None,
+                cost_in_cents,
                 run_time: task.and_then(AmbientAgentTask::run_time),
                 artifacts: entry.display.artifacts.clone(),
                 open_action,
@@ -533,6 +557,8 @@ impl ConversationDetailsData {
             executor: None,
             created_at,
             credits: entry.display.request_usage,
+            total_tokens: None,
+            cost_in_cents: entry.display.cost_in_cents,
             run_time: None,
             artifacts: entry.display.artifacts.clone(),
             open_action,
@@ -565,6 +591,8 @@ impl ConversationDetailsData {
             executor: None,
             created_at: None,
             credits: None,
+            total_tokens: None,
+            cost_in_cents: None,
             run_time: None,
             artifacts: vec![],
             open_action: None,
@@ -607,6 +635,8 @@ impl ConversationDetailsData {
             executor: None,
             created_at: Some(created_at),
             credits: credits_used,
+            total_tokens: None,
+            cost_in_cents: None,
             run_time: None,
             open_action,
             artifacts,
@@ -729,9 +759,12 @@ impl ConversationDetailsPanel {
                     ctx.dispatch_typed_action(ConversationDetailsPanelAction::OpenInOz);
                 })
         });
-        #[cfg(not(target_family = "wasm"))]
         ctx.subscribe_to_model(&AISettings::handle(ctx), |_, _, event, ctx| {
-            if matches!(event, AISettingsChangedEvent::IsAnyAIEnabled { .. }) {
+            if matches!(
+                event,
+                AISettingsChangedEvent::IsAnyAIEnabled { .. }
+                    | AISettingsChangedEvent::UsageDisplayUnit { .. }
+            ) {
                 ctx.notify();
             }
         });
@@ -816,11 +849,13 @@ impl ConversationDetailsPanel {
         if self.runner_platforms.contains_key(&runner_uid) {
             return;
         }
-
         self.runners_loading = true;
         let client = ServerApiProvider::as_ref(ctx).get_factory_client();
+        let team_scope = RequestTeamScope::from_scope(
+            &UserWorkspaces::as_ref(ctx).team_context_for_operation(ctx),
+        );
         ctx.spawn(
-            async move { client.get_runners(None).await },
+            async move { client.get_runners(None, Some(team_scope)).await },
             |me, result: anyhow::Result<Vec<Runner>>, ctx| {
                 me.runners_loading = false;
                 match result {
@@ -2270,9 +2305,21 @@ impl View for ConversationDetailsPanel {
         }
 
         if let Some(credits) = self.data.credits {
-            let formatted = format!("{credits:.1}");
+            let cost_in_cents = self.data.cost_in_cents;
+            let usage_display_unit = AISettings::as_ref(app).usage_display_unit;
+            let formatted = format_usage(
+                credits,
+                self.data.total_tokens,
+                cost_in_cents,
+                usage_display_unit,
+            );
+            let label = usage_label(
+                UsageLabelKind::DetailsPanel,
+                cost_in_cents,
+                usage_display_unit,
+            );
             content.add_child(
-                Container::new(self.render_simple_field("Credits used", &formatted, appearance))
+                Container::new(self.render_simple_field(&label, &formatted, appearance))
                     .with_margin_bottom(FIELD_SPACING)
                     .finish(),
             );

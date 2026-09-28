@@ -1,7 +1,8 @@
+use std::fmt::Display;
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use warpui::r#async::Timer;
 use warpui::{RetryOption, duration_with_jitter};
 
@@ -144,25 +145,106 @@ pub(crate) fn backoff_after_attempts(attempts_made: usize) -> Duration {
 /// `attempt_fn` is called repeatedly with a fresh `Future` per attempt, so callers that need
 /// per-attempt state (e.g. cloning a request body) own that inside their closure.
 ///
-/// Transient errors are retried up to [`MAX_ATTEMPTS`] total. Permanent errors return
-/// immediately. A warning is logged between attempts so retries are visible in logs.
-pub(crate) async fn with_bounded_retry<T, F, Fut>(operation: &str, mut attempt_fn: F) -> Result<T>
+/// Transient errors (per [`is_transient_http_error`]) are retried up to [`MAX_ATTEMPTS`]
+/// total. Permanent errors return immediately. A warning is logged between attempts so
+/// retries are visible in logs.
+pub(crate) async fn with_bounded_retry<T, F, Fut>(operation: &str, attempt_fn: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    for attempt in 1..=MAX_ATTEMPTS {
+    with_bounded_retry_using(operation, MAX_ATTEMPTS, is_transient_http_error, attempt_fn).await
+}
+
+/// General form of [`with_bounded_retry`] for callers that need a different transient-error
+/// classifier than [`is_transient_http_error`] (e.g. [`is_transient_graphql_or_http_error`] for
+/// GraphQL operations), a different attempt budget than [`MAX_ATTEMPTS`], or both.
+///
+/// Otherwise behaves identically: exponential backoff between attempts (see
+/// [`backoff_after_attempts`]), a warning logged before each retry, and the last error
+/// returned once `max_attempts` is reached.
+pub(crate) async fn with_bounded_retry_using<T, F, Fut>(
+    operation: &str,
+    max_attempts: usize,
+    is_transient: impl Fn(&anyhow::Error) -> bool,
+    attempt_fn: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    with_retry(
+        operation,
+        attempt_fn,
+        |err| is_transient(err),
+        |delay| async move {
+            Timer::after(delay).await;
+        },
+        |attempts_made| {
+            (attempts_made + 1 < max_attempts).then(|| backoff_after_attempts(attempts_made + 1))
+        },
+    )
+    .await
+}
+
+/// Generalized retry function that gives callers control over retry classification and backoff.
+///
+/// The retry loop calls `attempt_fn` until:
+/// * It succeeds
+/// * It returns a non-retryable error, according to `retryable_fn`
+/// * Attempts are exhausted due to `backoff_fn` returning `None`
+///
+/// `retryable_fn` classifies errors as retryable or not. It should return `true` if the failure
+/// can be retried, `false` if it should abort the operation.
+///
+/// `backoff_fn` returns the backoff delay to use after N attempts.
+pub(crate) async fn with_retry<T, E, F, S, B, R, Fut, SF>(
+    operation: &str,
+    mut attempt_fn: F,
+    mut retryable_fn: R,
+    mut sleep_fn: S,
+    mut backoff_fn: B,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    E: Display,
+    R: FnMut(&E) -> bool,
+    B: FnMut(usize) -> Option<Duration>,
+    S: FnMut(Duration) -> SF,
+    Fut: Future<Output = Result<T, E>>,
+    SF: Future<Output = ()>,
+{
+    let mut attempt = 1usize;
+    loop {
         match attempt_fn().await {
-            Ok(value) => return Ok(value),
-            Err(e) if attempt >= MAX_ATTEMPTS || !is_transient_http_error(&e) => return Err(e),
-            Err(e) => {
-                log::warn!("{operation}: attempt {attempt}/{MAX_ATTEMPTS} failed, retrying: {e:#}");
-                Timer::after(backoff_after_attempts(attempt)).await;
+            Ok(value) => break Ok(value),
+            Err(err) if retryable_fn(&err) => {
+                let delay = backoff_fn(attempt - 1);
+                log::warn!(
+                    "{operation}: transient error on attempt {attempt}, {}: {err:#}",
+                    if delay.is_some() {
+                        "retrying"
+                    } else {
+                        "retries exhausted"
+                    }
+                );
+
+                match delay {
+                    Some(delay) => {
+                        sleep_fn(delay).await;
+                        attempt += 1;
+                    }
+                    None => break Err(err),
+                }
+            }
+            Err(err) => {
+                log::warn!("{operation}: fatal error on attempt {attempt}: {err:#}");
+                break Err(err);
             }
         }
     }
-    // Unreachable when MAX_ATTEMPTS >= 1.
-    Err(anyhow!(
-        "retry loop exhausted without attempting operation (MAX_ATTEMPTS={MAX_ATTEMPTS})"
-    ))
 }
+
+#[cfg(test)]
+#[path = "retry_strategies_tests.rs"]
+mod tests;

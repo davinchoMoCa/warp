@@ -35,6 +35,7 @@ query GetWorkspacesMetadataForUser($requestContext: RequestContext!) {
             uid
             email
             role
+            isDisabled
           }
           teams {
             uid
@@ -44,8 +45,16 @@ query GetWorkspacesMetadataForUser($requestContext: RequestContext!) {
               uid
               email
               role
+              isDisabled
             }
             visibility
+            featureModelChoice { ... }
+          }
+          openTeams {
+            teamUid
+            numMembers
+            name
+            teamAcceptingInvites
           }
           billingMetadata {
             customerType

@@ -13,16 +13,8 @@ fn totals(credits_spent: f32, cost_in_cents: f32) -> ConversationUsageTotals {
         credits_spent,
         cost_in_cents: Some(cost_in_cents),
         has_usage: true,
+        charged_usage: None,
     }
-}
-
-#[test]
-fn cost_formats_cents_as_dollars() {
-    assert_eq!(format_cost(0.0), "$0.00");
-    assert_eq!(format_cost(0.4), "$0.00");
-    assert_eq!(format_cost(3.2), "$0.03");
-    assert_eq!(format_cost(123.0), "$1.23");
-    assert_eq!(format_cost(10_000.0), "$100.00");
 }
 
 #[test]
@@ -33,6 +25,14 @@ fn entry_text_matches_the_gui_credits_formatting() {
     assert_eq!(entry_text(mode, totals(1.0, 0.0)), "1 credit");
     assert_eq!(entry_text(mode, totals(2.0, 0.0)), "2 credits");
     assert_eq!(entry_text(mode, totals(2.5, 0.0)), "2.5 credits");
+}
+
+#[test]
+fn entry_text_never_rounds_a_positive_cost_to_zero() {
+    assert_eq!(
+        entry_text(TuiUsageDisplayMode::Cost, totals(0.0, 0.4)),
+        "<$0.01"
+    );
 }
 
 #[test]
@@ -57,6 +57,7 @@ fn cost_mode_explicitly_marks_unknown_historical_cost() {
                 credits_spent: 0.0,
                 cost_in_cents: None,
                 has_usage: true,
+                charged_usage: None,
             },
         ),
         "Cost unavailable"
