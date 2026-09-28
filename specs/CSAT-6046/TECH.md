@@ -70,7 +70,8 @@ returns true only for non-precise input while `FeatureFlag::SmoothScrolling` is 
 is checked by the consumer; no new global wheel-event type or frame event exists.
 
 A single `FeatureFlag::SmoothScrolling` gates both phases:
-- It appears in `RUNTIME_FEATURE_FLAGS` for local and development control.
+- It appears in `DOGFOOD_FLAGS`, so local and development (dogfood) builds enable it by default.
+- Its entry in `RUNTIME_FEATURE_FLAGS` permits toggling it at runtime; it does not enable it.
 - It is not a separate Phase 1/Phase 2 flag, a remote kill switch, or a user setting.
 
 The gate is read for each input event. Flag-off input uses the immediate path. Toggling the flag
