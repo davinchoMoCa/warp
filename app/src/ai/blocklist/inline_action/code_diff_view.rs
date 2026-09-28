@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,6 +10,7 @@ use ai::diff_validation::{
 use anyhow::Result;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_geometry::vector::vec2f;
@@ -2714,6 +2714,29 @@ impl TypedActionView for CodeDiffView {
     }
 }
 
+/// Maximum number of distinct files reconstructed into displayed diffs from one action's file
+/// edits, keeping the most recently touched files. An action that edited many files would
+/// otherwise reconstruct every one of them into a `FileDiff`.
+const MAX_RESTORED_FILE_DIFF_FILES: usize = 50;
+
+/// Maximum bytes of dummy content accumulated per reconstructed file diff, checked while
+/// accumulating rather than after, so a file with pathologically large or numerous edits can't
+/// grow the reconstruction — and the clones behind it — unbounded.
+const MAX_RESTORED_FILE_DIFF_CONTENT_BYTES: usize = 1_000_000;
+
+/// Returns the largest prefix of `s` that is at most `max_bytes` long and ends on a UTF-8
+/// character boundary.
+fn truncate_to_byte_ceiling(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Converts a list of FileEdits to a list of FileDiffs with mocked content.
 /// For restored FileEdits we don't have access to the actual file content, so we construct
 /// a lossy version of the FileDiff.
@@ -2722,16 +2745,23 @@ pub fn convert_file_edits_to_file_diffs(
     shell_launch_data: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
 ) -> Vec<FileDiff> {
-    // Group file edits by file path
-    let mut edits_by_file: HashMap<String, Vec<FileEdit>> = HashMap::new();
+    // Group file edits by file path, preserving the order files were first touched.
+    let mut edits_by_file: IndexMap<String, Vec<FileEdit>> = IndexMap::new();
     for edit in file_edits {
         if let Some(file_path) = edit.file().map(|f| f.to_string()) {
             edits_by_file.entry(file_path).or_default().push(edit);
         }
     }
 
+    // Keep only the most recently touched files, before any per-file cloning or string
+    // building below.
+    let skip_count = edits_by_file
+        .len()
+        .saturating_sub(MAX_RESTORED_FILE_DIFF_FILES);
+
     edits_by_file
         .into_iter()
+        .skip(skip_count)
         .filter(|(_, edits)| {
             // Filter out files that have no valid edits
             edits.iter().any(|edit| {
@@ -2761,7 +2791,15 @@ pub fn convert_file_edits_to_file_diffs(
             // Track if the file should be shown as deleted (explicit delete or move to another file)
             let mut show_as_deleted = false;
 
+            // Bounds the dummy content (and the clones behind it) this file accumulates. Checked
+            // before each edit/hunk is processed, so once exceeded, remaining edits are skipped
+            // rather than processed and discarded afterward.
+            let mut content_bytes_used = 0usize;
+
             for edit in &edits {
+                if content_bytes_used >= MAX_RESTORED_FILE_DIFF_CONTENT_BYTES {
+                    break;
+                }
                 match edit {
                     FileEdit::Edit(parsed_diff) => match parsed_diff {
                         ParsedDiff::StrReplaceEdit { .. } => {
@@ -2777,6 +2815,7 @@ pub fn convert_file_edits_to_file_diffs(
                                     max_line_number = max_line_number.max(range.end);
                                 }
 
+                                content_bytes_used += search_content.len();
                                 // Store the search content with its line range for later use
                                 search_blocks_with_ranges.push((line_range, search_content));
 
@@ -2784,16 +2823,19 @@ pub fn convert_file_edits_to_file_diffs(
                             }
                         }
                         ParsedDiff::V4AEdit { hunks, move_to, .. } => {
-                            // For V4A edits, collect hunks and track move_to
-                            v4a_hunks.extend(hunks.clone());
                             if move_to.is_some() {
                                 v4a_move_to = move_to.clone();
                                 // If this file is being moved/renamed, show source as deleted
                                 show_as_deleted = true;
                             }
 
-                            // Build dummy content from V4A hunks using pre_context + old + post_context
+                            // Build dummy content from V4A hunks using pre_context + old + post_context.
+                            // Hunks are only cloned into `v4a_hunks` while under budget, so a file with
+                            // many hunks doesn't pay for cloning ones beyond it.
                             for hunk in hunks {
+                                if content_bytes_used >= MAX_RESTORED_FILE_DIFF_CONTENT_BYTES {
+                                    break;
+                                }
                                 let mut hunk_content = String::new();
                                 if !hunk.pre_context.is_empty() {
                                     hunk_content.push_str(&hunk.pre_context);
@@ -2813,8 +2855,10 @@ pub fn convert_file_edits_to_file_diffs(
                                 // We don't have line numbers for V4A hunks in restored state,
                                 // so use None for the range
                                 if !hunk_content.is_empty() {
+                                    content_bytes_used += hunk_content.len();
                                     search_blocks_with_ranges.push((None, hunk_content));
                                 }
+                                v4a_hunks.push(hunk.clone());
                             }
                         }
                     },
@@ -2822,10 +2866,15 @@ pub fn convert_file_edits_to_file_diffs(
                         content: Some(content),
                         ..
                     } => {
-                        // For file creation, create a DiffDelta that inserts the content at the beginning
+                        // For file creation, create a DiffDelta that inserts the content at the
+                        // beginning, truncated to whatever budget remains before cloning it.
+                        let remaining =
+                            MAX_RESTORED_FILE_DIFF_CONTENT_BYTES.saturating_sub(content_bytes_used);
+                        let truncated = truncate_to_byte_ceiling(content, remaining);
+                        content_bytes_used += truncated.len();
                         create_diffs.push(DiffDelta {
                             replacement_line_range: 0..0,
-                            insertion: content.clone(),
+                            insertion: truncated.to_string(),
                         });
                     }
                     FileEdit::Delete { .. } => {
@@ -3093,3 +3142,7 @@ fn editor_range_to_file_context_range(range: Range<usize>) -> Range<usize> {
 fn file_context_range_to_editor_range(range: Range<usize>) -> Range<usize> {
     range.start.saturating_sub(1)..range.end.saturating_sub(1)
 }
+
+#[cfg(test)]
+#[path = "code_diff_view_tests.rs"]
+mod tests;
