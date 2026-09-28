@@ -9718,27 +9718,24 @@ impl TerminalView {
         }
     }
 
-    /// Drives an in-flight smooth-scroll animation to completion independently of the app's
-    /// paint/hover-replay machinery.
-    ///
-    /// The generic scrollables advance off the app's synthetic `MouseMoved` replay after each
-    /// repaint, which never fires for a window that has never received a real one, so an
-    /// animation there would sit registered and unapplied while requesting repaints forever.
-    ///
-    /// Drives its own advance via a single long-lived stream (`ctx.spawn_stream_local`) rather
-    /// than a self-rescheduling `ctx.spawn(Timer::after(...), ...)` per tick, which would pay a
-    /// fresh background-task-spawn-and-channel-bridge round trip every tick -- disproportionate
-    /// for a tight ~8ms cadence. Captures a clone of `self.smooth_scroll` by value rather than
-    /// borrowing `self`, since the stream must be `'static`.
+    /// Synthetic mouse replay does not advance an animation until the window has received a
+    /// real mouse move; one stream drives it independently of hover events.
     fn drive_smooth_scroll(handle: SmoothScrollHandle, ctx: &mut ViewContext<Self>) {
         let stream = futures::stream::unfold(handle, |handle| async move {
             Timer::after(SMOOTH_SCROLL_FRAME_INTERVAL).await;
-            handle.is_animating(Instant::now()).then_some(((), handle))
+            handle.needs_tick(Instant::now()).then_some(((), handle))
         });
         ctx.spawn_stream_local(
             stream,
             |view, (), ctx| view.advance_smooth_scroll(ctx),
-            |view, _ctx| view.smooth_scroll.mark_driving_stopped(),
+            |view, ctx| {
+                view.smooth_scroll.mark_driving_stopped();
+                if view.smooth_scroll.needs_tick(Instant::now())
+                    && view.smooth_scroll.try_start_driving()
+                {
+                    Self::drive_smooth_scroll(view.smooth_scroll.clone(), ctx);
+                }
+            },
         );
     }
 
