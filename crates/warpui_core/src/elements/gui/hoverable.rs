@@ -545,13 +545,6 @@ impl Hoverable {
         false
     }
 
-    /// Handles [`Event::MouseMoved`] events when the
-    /// element is going transitioning between hovered <-> unhovered
-    /// states (identified by `is_hovered`).
-    ///
-    /// This does _not_ take into account any delays; the handler
-    /// immediately sets the hovered state and fires any related
-    /// callbacks.
     fn handle_mouse_moved_without_delay(
         &mut self,
         is_hovered: bool,
@@ -560,20 +553,11 @@ impl Hoverable {
         ctx: &mut EventContext,
         app: &AppContext,
     ) -> bool {
-        // If there's no change in hover-state, then there's
-        // no work to do.
-        //
-        // Note: we intentionally compare the `hovered` property
-        // and not the `is_mouse_over_element` property.
+        // Hover delays can make the logical hover state differ from the pointer's hit test.
         let was_hovered = self.state().is_hovered;
         if was_hovered == is_hovered {
             return false;
         }
-        self.state().is_hovered = is_hovered;
-
-        // We should only handle this event if it isn't part of a back-to-back synthetic-event
-        // cascade (see `should_suppress_synthetic_hover_change`); a genuinely separate later
-        // repaint frame -- e.g. one driven by a content animation -- is not suppressed.
         if self
             .state()
             .should_suppress_synthetic_hover_change(is_synthetic, Instant::now())
@@ -584,12 +568,10 @@ impl Hoverable {
             return false;
         }
 
-        // Skip synthetic hover-out events if configured to do so.
         if !is_hovered && is_synthetic && self.skip_synthetic_hover_out {
             return false;
         }
-
-        // If there's a [`Hoverable::on_hover`] callback registered, call it.
+        self.state().is_hovered = is_hovered;
         if let Some(handler) = self.hover_handler.as_mut() {
             handler(is_hovered, ctx, app, position);
         };

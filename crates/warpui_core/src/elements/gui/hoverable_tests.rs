@@ -871,6 +871,7 @@ fn truly_back_to_back_synthetic_hover_changes_are_still_suppressed() {
                 0,
                 view.num_hover_out_events(&ElementIdentifier::HoverableElementBottomLeft)
             );
+            assert!(view.bottom_mouse_state.lock().unwrap().is_hovered());
         });
     });
 }
