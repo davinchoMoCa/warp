@@ -16020,7 +16020,7 @@ impl Workspace {
                 workspace.handle_failed_handoff_commit(
                     &source_view,
                     model_slot,
-                    failure,
+                    *failure,
                     intent,
                     ctx,
                 );
@@ -16030,7 +16030,7 @@ impl Workspace {
                 let model = model_slot.lock().ok().and_then(|slot| slot.clone());
                 if let Some((_, model)) = model {
                     model.update(ctx, |model, ctx| {
-                        model.monitor_created_handoff(created, ctx);
+                        model.monitor_created_handoff(*created, ctx);
                     });
                 }
                 Self::record_automatic_handoff_succeeded(intent, ctx);

@@ -188,8 +188,10 @@ use crate::ai::blocklist::{
     render_ai_agent_mode_icon, render_ai_follow_up_icon,
 };
 use crate::ai::cloud_agent_settings::{AuthSecretPreference, CloudAgentSettings};
+use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
+#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
 use crate::ai::cloud_environments::{
-    CloudAmbientAgentEnvironment, CloudSelectorChoice, FactorySelectorCatalog, FactorySelectorState,
+    CloudSelectorChoice, FactorySelectorCatalog, FactorySelectorState,
 };
 use crate::ai::connected_self_hosted_workers::{
     ConnectedSelfHostedWorkersEvent, ConnectedSelfHostedWorkersModel,

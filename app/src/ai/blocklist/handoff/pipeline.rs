@@ -756,11 +756,11 @@ pub enum HandoffCommitOutcome {
         error: HandoffPrepareError,
     },
     /// Fork, materialization, or spawn failed after execution began.
-    Failed(HandoffCommitFailure),
+    Failed(Box<HandoffCommitFailure>),
     /// The frontend cancelled execution before the cloud run was created.
     Cancelled,
     /// The cloud run was created and is ready for frontend monitoring.
-    Created(HandoffCreated),
+    Created(Box<HandoffCreated>),
 }
 
 pub fn handoff_dispatch_error(issue: &CloudAgentStartupIssue) -> String {
@@ -850,7 +850,7 @@ async fn execute_validated_handoff(
 ) -> HandoffCommitOutcome {
     let mut forked = match fork_source_conversation(pending, &ai_client).await {
         Ok(forked) => forked,
-        Err(failure) => return HandoffCommitOutcome::Failed(failure),
+        Err(failure) => return HandoffCommitOutcome::Failed(Box::new(failure)),
     };
     let mut cancellation = caller_cancellation;
     if let Some(materialize_handoff_target) = materialize_handoff_target {
@@ -885,13 +885,13 @@ async fn execute_validated_handoff(
             .await
             .context("Failed to materialize handoff target")
         {
-            return HandoffCommitOutcome::Failed(HandoffCommitFailure {
+            return HandoffCommitOutcome::Failed(Box::new(HandoffCommitFailure {
                 issue: classify_cloud_agent_startup_error(&error),
                 request: None,
                 restoration: forked.pending.take_restoration(),
                 derived_workspace_had_content: None,
                 snapshot_failed: false,
-            });
+            }));
         }
         cancellation = Some(receiver);
     }
@@ -930,7 +930,7 @@ async fn execute_validated_handoff(
         {
             Ok(true) => {}
             Ok(false) | Err(_) => {
-                return HandoffCommitOutcome::Failed(HandoffCommitFailure {
+                return HandoffCommitOutcome::Failed(Box::new(HandoffCommitFailure {
                     issue: CloudAgentStartupIssue::Failed(CloudAgentStartupFailure::Other {
                         message: "Factory is no longer available. Choose an available Factory and try again.".to_owned(),
                     }),
@@ -938,7 +938,7 @@ async fn execute_validated_handoff(
                     restoration: settled.restoration.take(),
                     derived_workspace_had_content: Some(settled.derived_workspace_had_content),
                     snapshot_failed: settled.snapshot_failed,
-                });
+                }));
             }
         }
     }
@@ -976,17 +976,17 @@ async fn execute_validated_handoff(
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            return HandoffCommitOutcome::Failed(HandoffCommitFailure {
+            return HandoffCommitOutcome::Failed(Box::new(HandoffCommitFailure {
                 issue: classify_cloud_agent_startup_error(&error),
                 request: Some(request),
                 restoration: settled.restoration.take(),
                 derived_workspace_had_content: Some(settled.derived_workspace_had_content),
                 snapshot_failed: settled.snapshot_failed,
-            });
+            }));
         }
     };
 
-    HandoffCommitOutcome::Created(HandoffCreated {
+    HandoffCommitOutcome::Created(Box::new(HandoffCreated {
         task_id: response.task_id,
         run_id: response.run_id.clone(),
         url: oz_run_url(&response.run_id),
@@ -994,7 +994,7 @@ async fn execute_validated_handoff(
         request,
         derived_workspace_had_content: settled.derived_workspace_had_content,
         snapshot_failed: settled.snapshot_failed,
-    })
+    }))
 }
 
 fn handoff_cancellation_requested(cancellation: &mut oneshot::Receiver<()>) -> bool {
