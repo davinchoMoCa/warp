@@ -22,7 +22,10 @@ use crate::ai::llms::{AvailableLLMs, LLMId, LLMInfo, LLMPreferences, ModelsByFea
 use crate::features::FeatureFlag;
 use crate::server::ids::{ServerId, SyncId};
 use crate::server::server_api::ServerApiProvider;
-use crate::server::server_api::ai::{ForkConversationResponse, MockAIClient, SpawnAgentResponse};
+use crate::server::server_api::ai::{
+    FactorySelectorOptionsResponse, FactorySelectorPageInfo, ForkConversationResponse,
+    MockAIClient, SpawnAgentResponse,
+};
 use crate::test_util::add_window_with_terminal;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 use crate::workspaces::user_workspaces::TeamContextForOperation;
@@ -31,6 +34,66 @@ fn task_id() -> AmbientAgentTaskId {
     "550e8400-e29b-41d4-a716-446655440000"
         .parse()
         .expect("valid task id")
+}
+
+#[tokio::test]
+async fn revoked_factory_after_materialization_preserves_source_draft_without_spawn() {
+    let materialized = Arc::new(AtomicBool::new(false));
+    let mut mock = MockAIClient::new();
+    mock.expect_fork_conversation().times(0);
+    mock.expect_spawn_agent().times(0);
+    mock.expect_get_factory_selector_options()
+        .times(1)
+        .returning(|_, cursor| {
+            assert!(cursor.is_none());
+            Ok(FactorySelectorOptionsResponse {
+                factories: vec![],
+                managed_environment_uids: vec![],
+                page_info: FactorySelectorPageInfo {
+                    has_next_page: false,
+                    next_cursor: None,
+                },
+            })
+        });
+    let client: Arc<dyn AIClient> = Arc::new(mock);
+    let mut pending = pending(client.clone(), None, false, "continue");
+    let choice = CloudSelectorChoice::Factory {
+        uid: "factory-12".to_owned(),
+        environment_uid: SyncId::ServerId(ServerId::from(12)),
+        foreman_agent_uid: "foreman-12".to_owned(),
+    };
+    pending.set_valid_factory_choices(vec![choice.clone()]);
+    pending.set_choice(choice.clone(), true);
+    let attachment = PendingAttachment::File(PendingFile {
+        file_name: "context.txt".to_owned(),
+        file_path: NamedTempFile::new()
+            .expect("attachment")
+            .path()
+            .to_path_buf(),
+        mime_type: "text/plain".to_owned(),
+    });
+    pending.restoration.as_mut().expect("draft").attachments = vec![attachment];
+
+    let materialize: MaterializeHandoffTarget = Box::new({
+        let materialized = materialized.clone();
+        move |target| {
+            Box::pin(async move {
+                assert_eq!(target.request.factory_uid.as_deref(), Some("factory-12"));
+                materialized.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    });
+    let outcome = execute_validated_handoff(pending, client, None, Some(materialize)).await;
+    assert!(materialized.load(Ordering::SeqCst));
+    let HandoffCommitOutcome::Failed(failure) = outcome else {
+        panic!("revoked Factory must fail without a normal run");
+    };
+    assert!(failure.request.is_none());
+    let restoration = failure.restoration.expect("source draft retained");
+    assert_eq!(restoration.prompt, "continue");
+    assert_eq!(restoration.attachments.len(), 1);
+    assert_eq!(restoration.selected_choice, Some(choice));
 }
 
 #[test]

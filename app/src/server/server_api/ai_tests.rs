@@ -8,14 +8,15 @@ use warp_server_client::base_client::{CLOUD_AGENT_ID_HEADER, TEAM_UID_HEADER};
 
 use super::super::ServerApi;
 use super::{
-    AIClient, AgentMessageHeader, AgentRunEvent, AgentSource, AmbientAgentTaskState, Artifact,
-    ArtifactDownloadResponse, ArtifactType, CONNECTED_SELF_HOSTED_WORKERS_PATH,
-    ConnectedSelfHostedWorker, CreateAgentRequest, ExecutionLocation, ForkConversationResponse,
-    ListConnectedSelfHostedWorkersResponse, ListRunsResponse, PrepareAttachmentUploadsResponse,
-    ReadAgentMessageResponse, RunFollowupRequest, RunSortBy, RunSortOrder, SpawnAgentRequest,
-    TaskGitCredentialsError, TaskListFilter, TaskStatusUpdate, UploadFieldValue, UserQueryMode,
+    AIClient, AgentConfigSnapshot, AgentMessageHeader, AgentRunEvent, AgentSource,
+    AmbientAgentTaskState, Artifact, ArtifactDownloadResponse, ArtifactType,
+    CONNECTED_SELF_HOSTED_WORKERS_PATH, ConnectedSelfHostedWorker, CreateAgentRequest,
+    ExecutionLocation, ForkConversationResponse, ListConnectedSelfHostedWorkersResponse,
+    ListRunsResponse, PrepareAttachmentUploadsResponse, ReadAgentMessageResponse,
+    RunFollowupRequest, RunSortBy, RunSortOrder, SpawnAgentRequest, TaskGitCredentialsError,
+    TaskListFilter, TaskStatusUpdate, UploadFieldValue, UserQueryMode,
     agent_task_status_message_input, build_fork_conversation_url, build_list_agent_runs_url,
-    build_run_followup_url, is_unknown_git_credential_schema_error,
+    build_run_followup_url, factory_selector_path, is_unknown_git_credential_schema_error,
 };
 use crate::notebooks::NotebookId;
 use crate::server::ids::ServerId;
@@ -25,6 +26,49 @@ use crate::workspaces::user_workspaces::{TeamContextForOperation, TeamlessScopeF
 
 fn request_scope_for_team(team_uid: ServerId) -> RequestTeamScope {
     RequestTeamScope::from_scope(&TeamContextForOperation::new_for_test(team_uid))
+}
+
+#[test]
+fn factory_selector_url_encodes_team_and_cursor() {
+    let team_uid = ServerId::from(7);
+    assert_eq!(
+        factory_selector_path(&team_uid.uid(), Some("next page/1")),
+        format!(
+            "factory/selector-options?team_uid={}&cursor=next%20page%2F1",
+            team_uid.uid()
+        )
+    );
+}
+
+#[test]
+fn factory_spawn_serializes_both_attribution_and_foreman_without_snapshot_overrides() {
+    let request = SpawnAgentRequest {
+        prompt: Some("Build".to_owned()),
+        mode: UserQueryMode::Normal,
+        config: Some(AgentConfigSnapshot {
+            environment_id: Some(ServerId::from(12).to_string()),
+            ..Default::default()
+        }),
+        title: None,
+        team: Some(true),
+        agent_identity_uid: Some("foreman-12".to_owned()),
+        factory_uid: Some("factory-12".to_owned()),
+        skill: None,
+        attachments: vec![],
+        interactive: Some(true),
+        parent_run_id: None,
+        runtime_skills: vec![],
+        referenced_attachments: vec![],
+        conversation_id: None,
+        initial_snapshot_token: None,
+        snapshot_disabled: None,
+        orchestration_handoff: None,
+    };
+    let value = serde_json::to_value(request).expect("serialize Factory spawn");
+    assert_eq!(value["factory_uid"], "factory-12");
+    assert_eq!(value["agent_identity_uid"], "foreman-12");
+    assert!(value["config"]["model_id"].is_null());
+    assert!(value["config"]["worker_host"].is_null());
 }
 
 #[test]

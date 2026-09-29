@@ -635,7 +635,6 @@ impl AmbientAgentViewModel {
             ctx.emit(AmbientAgentViewModelEvent::HarnessSelected);
         }
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
-        ctx.emit(AmbientAgentViewModelEvent::DispatchedAgent);
     }
     /// `HandoffInitiated.injection_path`. No-op when no handoff context is set.
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
@@ -672,6 +671,7 @@ impl AmbientAgentViewModel {
         }
         self.request = Some(created.request);
         self.source = None;
+        ctx.emit(AmbientAgentViewModelEvent::DispatchedAgent);
         let ai_client = ServerApiProvider::as_ref(ctx).get_ai_client();
         let stream = monitor_spawned_task(
             created.task_id,

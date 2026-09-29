@@ -348,6 +348,15 @@ pub struct FactorySelectorOptionsResponse {
     pub page_info: FactorySelectorPageInfo,
 }
 
+fn factory_selector_path(team_uid: &str, cursor: Option<&str>) -> String {
+    let mut path = format!("factory/selector-options?team_uid={team_uid}");
+    if let Some(cursor) = cursor {
+        path.push_str("&cursor=");
+        path.push_str(&urlencoding::encode(cursor));
+    }
+    path
+}
+
 /// Server-minted token returned by `POST /agent/handoff/upload-snapshot` that scopes a batch
 /// of presigned upload URLs to `handoff/{token}/`. The client passes it
 /// back via `SpawnAgentRequest.initial_snapshot_token`; the server stores it on the new run's
@@ -2512,11 +2521,7 @@ impl AIClient for ServerApi {
         let team_uid = team_scope
             .team_uid()
             .ok_or_else(|| anyhow!("Factory selector requires a team"))?;
-        let mut path = format!("factory/selector-options?team_uid={}", team_uid.uid());
-        if let Some(cursor) = cursor {
-            path.push_str("&cursor=");
-            path.push_str(&urlencoding::encode(&cursor));
-        }
+        let path = factory_selector_path(&team_uid.uid(), cursor.as_deref());
         self.get_public_api_with_team_scope(&path, Some(team_scope))
             .await
     }

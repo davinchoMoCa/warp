@@ -20,7 +20,7 @@ use crate::ai::ambient_agents::telemetry::CloudAgentTelemetryEvent;
 use crate::ai::cloud_agent_settings::CloudAgentSettings;
 use crate::ai::cloud_environments::{
     CloudAmbientAgentEnvironment, CloudEnvironmentCatalog, CloudSelectorChoice,
-    FactorySelectorCatalog, FactorySelectorState, environment_matches_scope,
+    FactorySelectorCatalog, FactorySelectorRow, FactorySelectorState, environment_matches_scope,
 };
 use crate::appearance::Appearance;
 use crate::cloud_object::CloudObjectLookup as _;
@@ -41,6 +41,64 @@ use crate::workspaces::user_workspaces::{TeamScope, UserWorkspaces, UserWorkspac
 pub(crate) enum EnvironmentSelectorTarget {
     CloudPane(ModelHandle<AmbientAgentViewModel>),
     Handoff(ModelHandle<HandoffComposeState>),
+}
+
+#[cfg(test)]
+mod factory_label_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_names_use_unique_alias_or_uid_to_disambiguate() {
+        let row = |uid: &str, alias: Option<&str>| FactorySelectorRow {
+            choice: CloudSelectorChoice::Factory {
+                uid: uid.to_owned(),
+                environment_uid: SyncId::ServerId(ServerId::from(12)),
+                foreman_agent_uid: "foreman".to_owned(),
+            },
+            name: "Build".to_owned(),
+            alias: alias.map(str::to_owned),
+        };
+        let rows = vec![
+            row("factory-a", Some("east")),
+            row("factory-b", Some("shared")),
+            row("factory-c", Some("shared")),
+        ];
+        assert_eq!(factory_row_label(&rows[0], &rows), "Build · Factory (east)");
+        assert_eq!(
+            factory_row_label(&rows[1], &rows),
+            "Build · Factory (factory-b)"
+        );
+        assert_eq!(
+            factory_row_label(&rows[2], &rows),
+            "Build · Factory (factory-c)"
+        );
+    }
+}
+
+fn factory_row_label(factory: &FactorySelectorRow, rows: &[FactorySelectorRow]) -> String {
+    let same_name = rows
+        .iter()
+        .filter(|other| other.name == factory.name)
+        .count()
+        > 1;
+    if !same_name {
+        return format!("{} · Factory", factory.name);
+    }
+    let alias = factory.alias.as_deref().unwrap_or_default();
+    let unique_alias = !alias.is_empty()
+        && rows
+            .iter()
+            .filter(|other| other.name == factory.name && other.alias.as_deref() == Some(alias))
+            .count()
+            == 1;
+    let qualifier = if unique_alias {
+        alias.to_owned()
+    } else if let CloudSelectorChoice::Factory { uid, .. } = &factory.choice {
+        uid.clone()
+    } else {
+        String::new()
+    };
+    format!("{} · Factory ({qualifier})", factory.name)
 }
 
 impl EnvironmentSelectorTarget {
@@ -435,40 +493,9 @@ impl EnvironmentSelector {
             && let Some(FactorySelectorState::Ready(snapshot)) = self.selector_state(ctx)
         {
             for factory in snapshot.factories() {
-                let same_name = snapshot
-                    .factories()
-                    .iter()
-                    .filter(|other| other.name == factory.name)
-                    .count()
-                    > 1;
-                let qualifier = if same_name {
-                    let alias = factory.alias.as_deref().unwrap_or_default();
-                    let unique = !alias.is_empty()
-                        && snapshot
-                            .factories()
-                            .iter()
-                            .filter(|other| {
-                                other.name == factory.name && other.alias.as_deref() == Some(alias)
-                            })
-                            .count()
-                            == 1;
-                    if unique {
-                        alias.to_owned()
-                    } else if let CloudSelectorChoice::Factory { uid, .. } = &factory.choice {
-                        uid.clone()
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                };
                 choices.push(EnvironmentMenuItem {
                     choice: factory.choice.clone(),
-                    name: if qualifier.is_empty() {
-                        format!("{} · Factory", factory.name)
-                    } else {
-                        format!("{} · Factory ({qualifier})", factory.name)
-                    },
+                    name: factory_row_label(factory, snapshot.factories()),
                     is_selected: false,
                 });
             }

@@ -356,6 +356,10 @@ impl PendingHandoff {
         }
         self.selected_choice = environment_id.map(CloudSelectorChoice::Environment);
         self.config.environment_id = environment_id.map(|id| id.to_string());
+        if let Some(restoration) = &mut self.restoration {
+            restoration.environment_id = environment_id;
+            restoration.selected_choice = self.selected_choice.clone();
+        }
     }
 
     pub fn set_choice(&mut self, choice: CloudSelectorChoice, is_explicit: bool) {
@@ -376,6 +380,10 @@ impl PendingHandoff {
         }
         self.selected_choice = Some(choice);
         self.environment_selection_is_explicit |= is_explicit;
+        if let Some(restoration) = &mut self.restoration {
+            restoration.environment_id = Some(environment_id);
+            restoration.selected_choice = self.selected_choice.clone();
+        }
     }
 
     /// Applies a model selection and records whether it is cloud-runnable.
@@ -731,7 +739,7 @@ pub struct HandoffCreated {
 ///
 /// Depending on the failed stage, this may include a completed spawn request
 /// for existing retry UI and source-input restoration state for a frontend
-/// that has not yet materialized its destination.
+/// that must discard a provisional destination or has not materialized one.
 pub struct HandoffCommitFailure {
     pub issue: CloudAgentStartupIssue,
     pub request: Option<SpawnAgentRequest>,

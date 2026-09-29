@@ -15,6 +15,34 @@ fn attachment() -> AttachmentInput {
     }
 }
 
+#[test]
+fn invalidated_factory_choice_blocks_dispatch_until_reselected() {
+    App::test((), |mut app| async move {
+        let _factory_selector = FeatureFlag::CloudModeFactorySelector.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+        let model = add_model(&mut app);
+        let scope = TeamContextForOperation::new_for_test(7.into());
+        model.update(&mut app, |model, ctx| {
+            model.set_choice(
+                CloudSelectorChoice::Factory {
+                    uid: "factory-12".to_owned(),
+                    environment_uid: SyncId::ServerId(ServerId::from(12)),
+                    foreman_agent_uid: "foreman-12".to_owned(),
+                },
+                ctx,
+            );
+            model.invalidate_choice(ctx);
+            model.spawn_agent("do work".to_owned(), vec![], &scope, ctx);
+        });
+        model.read(&app, |model, _| {
+            assert!(model.selection_invalidated());
+            assert!(model.selected_choice().is_none());
+            assert!(model.request().is_none());
+            assert!(matches!(model.status(), Status::Composing));
+        });
+    });
+}
+
 fn team_request_scope() -> RequestTeamScope {
     RequestTeamScope::from_scope(&TeamContextForOperation::new_for_test(7.into()))
 }

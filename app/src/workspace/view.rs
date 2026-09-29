@@ -606,6 +606,15 @@ enum TeamNavigationMode {
     BrowseTeams,
     TeamSwitcher,
 }
+#[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+type ProvisionalHandoffTarget = Arc<
+    Mutex<
+        Option<(
+            ViewHandle<TerminalView>,
+            ModelHandle<HandoffAmbientAgentViewModel>,
+        )>,
+    >,
+>;
 
 fn team_navigation_mode(
     has_current_team: bool,
@@ -15963,8 +15972,7 @@ impl Workspace {
         };
 
         let presentation = pending.presentation_snapshot();
-        let model_slot: Arc<Mutex<Option<ModelHandle<HandoffAmbientAgentViewModel>>>> =
-            Arc::new(Mutex::new(None));
+        let model_slot: ProvisionalHandoffTarget = Arc::new(Mutex::new(None));
         let materialize_slot = model_slot.clone();
         let workspace_spawner = ctx.spawner();
         let materialize_source_view = source_view.clone();
@@ -15976,7 +15984,6 @@ impl Workspace {
                             materialize_source_view,
                             materialization,
                             presentation,
-                            intent,
                             materialize_slot,
                             ctx,
                         )
@@ -15998,12 +16005,29 @@ impl Workspace {
                     ctx,
                 );
             }
-            HandoffCommitOutcome::Failed(failure) => {
-                let model = model_slot.lock().ok().and_then(|slot| slot.clone());
-                if let Some(model) = model {
+            HandoffCommitOutcome::Failed(mut failure) => {
+                let target = model_slot.lock().ok().and_then(|slot| slot.clone());
+                if let Some((target_view, model)) = target {
+                    let restoration = if failure.request.is_none() {
+                        failure.restoration.take()
+                    } else {
+                        None
+                    };
                     model.update(ctx, |model, ctx| {
                         model.handle_handoff_commit_failure(failure, ctx);
                     });
+                    if restoration.is_some() {
+                        target_view.update(ctx, |view, ctx| {
+                            view.abort_provisional_handoff_target(&model, ctx);
+                        });
+                        workspace.restore_handoff_after_commit_failure(
+                            &source_view,
+                            restoration,
+                            intent,
+                            None,
+                            ctx,
+                        );
+                    }
                 } else {
                     workspace.restore_handoff_after_commit_failure(
                         &source_view,
@@ -16017,10 +16041,14 @@ impl Workspace {
             HandoffCommitOutcome::Cancelled => {}
             HandoffCommitOutcome::Created(created) => {
                 let model = model_slot.lock().ok().and_then(|slot| slot.clone());
-                if let Some(model) = model {
+                if let Some((_, model)) = model {
                     model.update(ctx, |model, ctx| {
                         model.monitor_created_handoff(created, ctx);
                     });
+                }
+                Self::record_automatic_handoff_succeeded(intent, ctx);
+                if intent.shows_user_feedback() {
+                    Self::show_handoff_success_toast(ctx);
                 }
             }
         });
@@ -16032,8 +16060,7 @@ impl Workspace {
         source_view: ViewHandle<TerminalView>,
         materialization: HandoffTargetMaterialization,
         presentation: HandoffPresentationSnapshot,
-        intent: LocalToCloudHandoffIntent,
-        model_slot: Arc<Mutex<Option<ModelHandle<HandoffAmbientAgentViewModel>>>>,
+        model_slot: ProvisionalHandoffTarget,
         ctx: &mut ViewContext<Self>,
     ) -> anyhow::Result<()> {
         debug_assert_eq!(
@@ -16131,11 +16158,7 @@ impl Workspace {
         });
 
         if let Ok(mut slot) = model_slot.lock() {
-            *slot = Some(model_handle);
-        }
-        Self::record_automatic_handoff_succeeded(intent, ctx);
-        if intent.shows_user_feedback() {
-            Self::show_handoff_success_toast(ctx);
+            *slot = Some((handoff_target, model_handle));
         }
         Ok(())
     }

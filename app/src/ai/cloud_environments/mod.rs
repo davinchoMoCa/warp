@@ -12,7 +12,8 @@ pub use cloud_object_models::{
 };
 use cloud_objects::cloud_object::Owner;
 pub(crate) use factory_selector::{
-    CloudSelectorChoice, FactorySelectorCatalog, FactorySelectorState, revalidate_factory_choice,
+    CloudSelectorChoice, FactorySelectorCatalog, FactorySelectorRow, FactorySelectorState,
+    revalidate_factory_choice,
 };
 use warpui::{AppContext, Entity, SingletonEntity as _, ViewContext};
 

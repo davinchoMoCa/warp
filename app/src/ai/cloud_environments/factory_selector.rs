@@ -333,11 +333,187 @@ impl SingletonEntity for FactorySelectorCatalog {}
 
 #[cfg(test)]
 mod tests {
+    use settings::Setting as _;
+    use warpui::App;
+
     use super::*;
+    use crate::ai::cloud_environments::{
+        AmbientAgentEnvironment, CloudAmbientAgentEnvironmentModel,
+    };
+    use crate::cloud_object::model::persistence::CloudModel;
+    use crate::cloud_object::{CloudObjectMetadata, CloudObjectPermissions, Owner};
     use crate::server::server_api::ai::{
         FactorySelectorOptionsResponse, FactorySelectorPageInfo, MockAIClient,
     };
+    use crate::test_util::settings::initialize_settings_for_tests;
     use crate::workspaces::user_workspaces::TeamContextForOperation;
+    fn environment(id: SyncId, name: &str, owner: Owner) -> CloudAmbientAgentEnvironment {
+        let mut permissions = CloudObjectPermissions::mock_personal();
+        permissions.owner = owner;
+        CloudAmbientAgentEnvironment::new(
+            id,
+            CloudAmbientAgentEnvironmentModel::new(AmbientAgentEnvironment::new(
+                name.to_owned(),
+                None,
+                Vec::new(),
+                "ubuntu:latest".to_owned(),
+                Vec::new(),
+            )),
+            CloudObjectMetadata::mock(),
+            permissions,
+        )
+    }
+
+    #[test]
+    fn managed_backing_is_hidden_but_unmanaged_shared_default_remains_visible() {
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            let team = ServerId::from(7);
+            let other_team = ServerId::from(8);
+            let managed = SyncId::ServerId(ServerId::from(12));
+            let shared_default = SyncId::ServerId(ServerId::from(13));
+            let foreign = SyncId::ServerId(ServerId::from(14));
+            let cloud_model = app.add_singleton_model(CloudModel::mock);
+            app.update(|ctx| {
+                cloud_model.update(ctx, |model, ctx| {
+                    for (id, owner) in [
+                        (managed, Owner::Team { team_uid: team }),
+                        (shared_default, Owner::Team { team_uid: team }),
+                        (
+                            foreign,
+                            Owner::Team {
+                                team_uid: other_team,
+                            },
+                        ),
+                    ] {
+                        model.create_object(id, environment(id, &id.to_string(), owner), ctx);
+                    }
+                });
+            });
+            app.add_singleton_model(CloudEnvironmentCatalog::new);
+            let selector = app.add_singleton_model(|_| FactorySelectorCatalog {
+                team_uid: Some(team),
+                initialized: true,
+                generation: 1,
+                state: FactorySelectorState::Ready(FactorySelectorSnapshot {
+                    factories: vec![FactorySelectorRow {
+                        choice: CloudSelectorChoice::Factory {
+                            uid: "factory".to_owned(),
+                            environment_uid: shared_default,
+                            foreman_agent_uid: "foreman".to_owned(),
+                        },
+                        name: "Build".to_owned(),
+                        alias: None,
+                    }],
+                    managed_environment_ids: HashSet::from([managed]),
+                }),
+            });
+            let team_scope = TeamContextForOperation::new_for_test(team);
+            let other_scope = TeamContextForOperation::new_for_test(other_team);
+            selector.read(&app, |catalog, ctx| {
+                assert_eq!(
+                    catalog
+                        .visible_environments(&team_scope, ctx)
+                        .into_iter()
+                        .map(|environment| environment.id)
+                        .collect::<Vec<_>>(),
+                    vec![shared_default]
+                );
+                assert!(catalog.state_for(&other_scope).is_none());
+                assert!(catalog.visible_environments(&other_scope, ctx).is_empty());
+                assert_eq!(
+                    catalog
+                        .preferred_choice(&team_scope, ctx)
+                        .expect("unmanaged fallback"),
+                    CloudSelectorChoice::Environment(shared_default)
+                );
+            });
+            selector.update(&mut app, |catalog, _| {
+                catalog.state = FactorySelectorState::Loading;
+            });
+            selector.read(&app, |catalog, ctx| {
+                assert!(catalog.visible_environments(&team_scope, ctx).is_empty());
+                assert!(catalog.preferred_choice(&team_scope, ctx).is_none());
+            });
+            selector.update(&mut app, |catalog, _| {
+                catalog.state = FactorySelectorState::Failed;
+            });
+            selector.read(&app, |catalog, ctx| {
+                assert!(catalog.visible_environments(&team_scope, ctx).is_empty());
+            });
+        });
+    }
+
+    #[test]
+    fn tagged_preferences_preserve_team_scope_and_never_fall_back_to_factory_backing() {
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            let team = ServerId::from(7);
+            let other_team = ServerId::from(8);
+            let managed = SyncId::ServerId(ServerId::from(12));
+            let ordinary = SyncId::ServerId(ServerId::from(13));
+            let cloud_model = app.add_singleton_model(CloudModel::mock);
+            app.update(|ctx| {
+                cloud_model.update(ctx, |model, ctx| {
+                    for id in [managed, ordinary] {
+                        model.create_object(
+                            id,
+                            environment(id, &id.to_string(), Owner::Team { team_uid: team }),
+                            ctx,
+                        );
+                    }
+                });
+            });
+            app.add_singleton_model(CloudEnvironmentCatalog::new);
+            let selector = app.add_singleton_model(|_| FactorySelectorCatalog {
+                team_uid: Some(team),
+                initialized: true,
+                generation: 1,
+                state: FactorySelectorState::Ready(FactorySelectorSnapshot {
+                    factories: vec![],
+                    managed_environment_ids: HashSet::from([managed]),
+                }),
+            });
+            let scope = TeamContextForOperation::new_for_test(team);
+            let foreign_scope = TeamContextForOperation::new_for_test(other_team);
+            CloudAgentSettings::handle(&app).update(&mut app, |settings, ctx| {
+                settings
+                    .last_selected_environment_id
+                    .set_value(Some(ordinary), ctx)
+                    .expect("legacy selection");
+            });
+            selector.read(&app, |catalog, ctx| {
+                assert_eq!(
+                    catalog.preferred_choice(&scope, ctx),
+                    Some(CloudSelectorChoice::Environment(ordinary))
+                );
+            });
+            CloudAgentSettings::handle(&app).update(&mut app, |settings, ctx| {
+                settings.persist_cloud_selector_preference(
+                    &scope,
+                    CloudSelectorPreference::Factory("deleted-factory".to_owned()),
+                    ctx,
+                );
+            });
+            selector.read(&app, |catalog, ctx| {
+                assert_eq!(
+                    catalog.preferred_choice(&scope, ctx),
+                    Some(CloudSelectorChoice::Environment(ordinary))
+                );
+                assert!(catalog.state_for(&foreign_scope).is_none());
+                assert_eq!(
+                    CloudAgentSettings::as_ref(ctx).cloud_selector_preference(&foreign_scope),
+                    None
+                );
+                assert_eq!(
+                    CloudAgentSettings::as_ref(ctx).cloud_selector_preference(&scope),
+                    Some(CloudSelectorPreference::Factory(
+                        "deleted-factory".to_owned()
+                    ))
+                );
+            });
+        });
+    }
 
     #[test]
     fn tagged_choices_do_not_conflate_factory_and_environment_ids() {
