@@ -269,8 +269,6 @@ pub struct LocalRepoMetadataModel {
     /// Per-repository queues that cap watcher filesystem walks at one in flight.
     #[cfg(feature = "local_fs")]
     watcher_update_tasks: HashMap<StandardizedPath, WatcherUpdateQueue>,
-    #[cfg(all(test, feature = "local_fs"))]
-    watcher_file_limit: usize,
     #[cfg(feature = "local_fs")]
     pending_directory_loads: HashMap<BuildTaskKey, PendingDirectoryLoad>,
     #[cfg(feature = "local_fs")]
@@ -530,8 +528,6 @@ impl LocalRepoMetadataModel {
             build_tasks: HashMap::new(),
             #[cfg(feature = "local_fs")]
             watcher_update_tasks: HashMap::new(),
-            #[cfg(all(test, feature = "local_fs"))]
-            watcher_file_limit: MAX_FILES_PER_REPO,
             #[cfg(feature = "local_fs")]
             pending_directory_loads: HashMap::new(),
             #[cfg(feature = "local_fs")]
@@ -1002,10 +998,6 @@ impl LocalRepoMetadataModel {
         let standing_query_definitions = self.standing_query_definitions.clone();
         let lazy_load = self.lazy_loaded_paths.contains_key(&repo_path);
         let loaded_directory_paths = Self::loaded_directory_paths(&state.entry);
-        #[cfg(test)]
-        let watcher_file_limit = self.watcher_file_limit;
-        #[cfg(not(test))]
-        let watcher_file_limit = MAX_FILES_PER_REPO;
         let work_for_build = work.clone();
         let work_for_abort = work;
         let task_future_id = Rc::new(Cell::new(None));
@@ -1017,13 +1009,12 @@ impl LocalRepoMetadataModel {
                 let computed = match work_for_build {
                     WatcherWork::Incremental(update) => {
                         let (mutations, standing_results, removed_roots) =
-                            Self::compute_file_tree_mutations_with_limit(
+                            Self::compute_file_tree_mutations(
                                 &update,
                                 &gitignores,
                                 &force_included_paths,
                                 &standing_query_definitions,
                                 lazy_load,
-                                watcher_file_limit,
                             )
                             .await;
                         ComputedWatcherUpdate::Incremental {
@@ -2139,7 +2130,6 @@ impl LocalRepoMetadataModel {
     /// are emitted as unloaded placeholders rather than fully-materialized
     /// subtrees, matching the lazy tree model; the directory is materialized
     /// (and watched) on demand when the user expands it via `load_directory`.
-    #[cfg(test)]
     async fn compute_file_tree_mutations(
         update: &RepoUpdate,
         gitignores: &[Arc<Gitignore>],
@@ -2151,32 +2141,10 @@ impl LocalRepoMetadataModel {
         StandingQueryResults,
         Vec<StandardizedPath>,
     ) {
-        Self::compute_file_tree_mutations_with_limit(
-            update,
-            gitignores,
-            force_included_paths,
-            standing_query_definitions,
-            lazy_load,
-            MAX_FILES_PER_REPO,
-        )
-        .await
-    }
-
-    async fn compute_file_tree_mutations_with_limit(
-        update: &RepoUpdate,
-        gitignores: &[Arc<Gitignore>],
-        force_included_paths: &[PathBuf],
-        standing_query_definitions: &StandingQueryDefinitions,
-        lazy_load: bool,
-        mut file_limit: usize,
-    ) -> (
-        Vec<FileTreeMutation>,
-        StandingQueryResults,
-        Vec<StandardizedPath>,
-    ) {
         let mut mutations = Vec::new();
         let mut standing_results = StandingQueryResults::default();
         let mut removed_roots = Vec::new();
+        let mut file_limit = MAX_FILES_PER_REPO;
 
         // Removals for deleted and moved-from paths
         for path_to_remove in update.deleted.iter().chain(update.moved.values()) {

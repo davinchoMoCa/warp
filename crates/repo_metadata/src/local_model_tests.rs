@@ -25,6 +25,8 @@ use crate::entry::{
     IgnoredPathStrategy,
 };
 use crate::file_tree_store::{FileTreeEntry, FileTreeEntryState, FileTreeState};
+#[cfg(all(feature = "local_fs", target_os = "linux"))]
+use crate::local_model::MAX_FILES_PER_REPO;
 #[cfg(feature = "local_fs")]
 use crate::local_model::MAX_PENDING_WATCHER_PATHS;
 use crate::local_model::{
@@ -46,8 +48,6 @@ impl LocalRepoMetadataModel {
             build_tasks: Default::default(),
             #[cfg(feature = "local_fs")]
             watcher_update_tasks: Default::default(),
-            #[cfg(feature = "local_fs")]
-            watcher_file_limit: crate::local_model::MAX_FILES_PER_REPO,
             #[cfg(feature = "local_fs")]
             pending_directory_loads: Default::default(),
             #[cfg(feature = "local_fs")]
@@ -88,8 +88,20 @@ async fn await_watcher_updates_for_repo(
     }
 }
 
-#[cfg(feature = "local_fs")]
-const TEST_WATCHER_FILE_LIMIT: usize = 8;
+#[cfg(all(feature = "local_fs", target_os = "linux"))]
+const HARD_LINK_TEMPLATE_COUNT: usize = 256;
+
+#[cfg(all(feature = "local_fs", target_os = "linux"))]
+fn create_hard_links(directory: &std::path::Path, count: usize, sources: &[PathBuf]) {
+    std::fs::create_dir_all(directory).unwrap();
+    for index in 0..count {
+        std::fs::hard_link(
+            &sources[index % sources.len()],
+            directory.join(format!("file-{index:06}.txt")),
+        )
+        .unwrap();
+    }
+}
 
 #[cfg(feature = "local_fs")]
 fn file_count(entry: &FileTreeEntry, path: &StandardizedPath) -> usize {
@@ -194,26 +206,12 @@ fn repository_indexed_resolves_immediately_for_indexed_repo() {
     });
 }
 
-#[cfg(feature = "local_fs")]
+#[cfg(all(feature = "local_fs", target_os = "linux"))]
 #[test]
 fn watcher_added_directories_share_one_eager_file_budget() {
     VirtualFS::test("watcher_cumulative_file_budget", |dirs, mut vfs| {
         vfs.mkdir("repo/first/eager/lazy")
-            .mkdir("repo/second/eager/lazy")
-            .with_files(vec![
-                Stub::FileWithContent("repo/first/eager/file-0.txt", ""),
-                Stub::FileWithContent("repo/first/eager/file-1.txt", ""),
-                Stub::FileWithContent("repo/first/eager/file-2.txt", ""),
-                Stub::FileWithContent("repo/first/eager/file-3.txt", ""),
-                Stub::FileWithContent("repo/first/eager/file-4.txt", ""),
-                Stub::FileWithContent("repo/first/eager/lazy/file.txt", ""),
-                Stub::FileWithContent("repo/second/eager/file-0.txt", ""),
-                Stub::FileWithContent("repo/second/eager/file-1.txt", ""),
-                Stub::FileWithContent("repo/second/eager/file-2.txt", ""),
-                Stub::FileWithContent("repo/second/eager/file-3.txt", ""),
-                Stub::FileWithContent("repo/second/eager/file-4.txt", ""),
-                Stub::FileWithContent("repo/second/eager/lazy/file.txt", ""),
-            ]);
+            .mkdir("repo/second/eager/lazy");
         let repo = dirs.tests().join("repo");
         let first = repo.join("first");
         let second = repo.join("second");
@@ -221,16 +219,24 @@ fn watcher_added_directories_share_one_eager_file_budget() {
         let second_eager = second.join("eager");
         let first_lazy = first_eager.join("lazy");
         let second_lazy = second_eager.join("lazy");
+        let templates = (0..HARD_LINK_TEMPLATE_COUNT)
+            .map(|index| {
+                let path = repo.join(format!("template-{index}.txt"));
+                std::fs::write(&path, "template").unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let (first_templates, second_templates) = templates.split_at(HARD_LINK_TEMPLATE_COUNT / 2);
+        create_hard_links(&first_eager, MAX_FILES_PER_REPO / 2, first_templates);
+        create_hard_links(&second_eager, MAX_FILES_PER_REPO / 2, second_templates);
+        create_hard_links(&first_lazy, 1, &templates[..1]);
+        create_hard_links(&second_lazy, 1, &templates[HARD_LINK_TEMPLATE_COUNT / 2..]);
 
         let repo = StandardizedPath::from_local_canonicalized(&repo).unwrap();
         let first_lazy = StandardizedPath::from_local_canonicalized(&first_lazy).unwrap();
         let second_lazy = StandardizedPath::from_local_canonicalized(&second_lazy).unwrap();
         App::test((), |mut app| async move {
-            let model_handle = app.add_model(|_| {
-                let mut model = LocalRepoMetadataModel::new_for_test();
-                model.watcher_file_limit = TEST_WATCHER_FILE_LIMIT;
-                model
-            });
+            let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
             model_handle.update(&mut app, |model, ctx| {
                 model.repositories.insert(
                     repo.clone(),
@@ -250,7 +256,7 @@ fn watcher_added_directories_share_one_eager_file_budget() {
                 let state = model
                     .get_repository(&repo)
                     .expect("repository should remain indexed");
-                assert_eq!(file_count(&state.entry, &repo), TEST_WATCHER_FILE_LIMIT);
+                assert_eq!(file_count(&state.entry, &repo), MAX_FILES_PER_REPO);
                 assert!(
                     [&first_lazy, &second_lazy]
                         .iter()
@@ -262,26 +268,23 @@ fn watcher_added_directories_share_one_eager_file_budget() {
     });
 }
 
-#[cfg(feature = "local_fs")]
+#[cfg(all(feature = "local_fs", target_os = "linux"))]
 #[test]
 fn watcher_added_directory_enforces_file_budget_and_preserves_force_included_file() {
     VirtualFS::test("watcher_single_directory_file_budget", |dirs, mut vfs| {
-        vfs.mkdir("repo/oversized/.agents/skills/example")
-            .with_files(vec![
-                Stub::FileWithContent("repo/oversized/file-0.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-1.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-2.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-3.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-4.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-5.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-6.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-7.txt", ""),
-                Stub::FileWithContent("repo/oversized/file-8.txt", ""),
-                Stub::FileWithContent("repo/oversized/.agents/skills/example/SKILL.md", ""),
-            ]);
+        vfs.mkdir("repo/oversized/.agents/skills/example");
         let repo = dirs.tests().join("repo");
         let oversized = repo.join("oversized");
         let skill = oversized.join(".agents/skills/example/SKILL.md");
+        std::fs::write(&skill, "name: example").unwrap();
+        let templates = (0..HARD_LINK_TEMPLATE_COUNT)
+            .map(|index| {
+                let path = repo.join(format!("template-{index}.txt"));
+                std::fs::write(&path, "template").unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        create_hard_links(&oversized, MAX_FILES_PER_REPO + 1, &templates);
 
         let repo = StandardizedPath::from_local_canonicalized(&repo).unwrap();
         let oversized = StandardizedPath::from_local_canonicalized(&oversized).unwrap();
@@ -290,7 +293,6 @@ fn watcher_added_directory_enforces_file_budget_and_preserves_force_included_fil
             let model_handle = app.add_model(|_| {
                 let mut model = LocalRepoMetadataModel::new_for_test();
                 model.register_force_included_paths([PathBuf::from(".agents/skills")]);
-                model.watcher_file_limit = TEST_WATCHER_FILE_LIMIT;
                 model
             });
             model_handle.update(&mut app, |model, ctx| {
@@ -314,11 +316,62 @@ fn watcher_added_directory_enforces_file_budget_and_preserves_force_included_fil
                 let state = model
                     .get_repository(&repo)
                     .expect("repository should remain indexed");
-                assert_eq!(
-                    file_count(&state.entry, &oversized),
-                    TEST_WATCHER_FILE_LIMIT + 1
-                );
+                assert_eq!(file_count(&state.entry, &oversized), MAX_FILES_PER_REPO + 1);
                 assert!(state.entry.contains(&skill));
+            });
+        });
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn watcher_added_directories_materialize_small_batch() {
+    VirtualFS::test("watcher_added_directories_small_batch", |dirs, mut vfs| {
+        vfs.mkdir("repo/first")
+            .mkdir("repo/second/nested")
+            .with_files(vec![
+                Stub::FileWithContent("repo/first/one.txt", "one"),
+                Stub::FileWithContent("repo/second/two.txt", "two"),
+                Stub::FileWithContent("repo/second/nested/three.txt", "three"),
+            ]);
+        let repo = dirs.tests().join("repo");
+        let first = repo.join("first");
+        let second = repo.join("second");
+        let expected = [
+            first.join("one.txt"),
+            second.join("two.txt"),
+            second.join("nested/three.txt"),
+        ];
+        let repo = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+
+        App::test((), |mut app| async move {
+            let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+            model_handle.update(&mut app, |model, ctx| {
+                model.repositories.insert(
+                    repo.clone(),
+                    IndexedRepoState::Indexed(empty_repo_state(&repo)),
+                );
+                model.handle_watcher_event(
+                    &BulkFilesystemWatcherEvent {
+                        added: std::collections::HashSet::from([first, second]),
+                        ..Default::default()
+                    },
+                    ctx,
+                );
+            });
+            await_watcher_updates_for_repo(&mut app, &model_handle, &repo).await;
+
+            model_handle.read(&app, |model, _ctx| {
+                let state = model
+                    .get_repository(&repo)
+                    .expect("repository should remain indexed");
+                for path in expected {
+                    let path = StandardizedPath::try_from_local(&path).unwrap();
+                    assert!(
+                        matches!(state.entry.get(&path), Some(FileTreeEntryState::File(_))),
+                        "{path} should be materialized"
+                    );
+                }
             });
         });
     });
