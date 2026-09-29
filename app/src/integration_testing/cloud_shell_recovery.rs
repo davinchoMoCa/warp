@@ -16,18 +16,18 @@ use crate::integration_testing::step::new_step_with_default_assertions;
 use crate::integration_testing::view_getters::{single_terminal_view_for_tab, workspace_view};
 use crate::terminal::TerminalView;
 
-pub fn add_shared_ambient_docker_sandbox_tab() -> TestStep {
-    new_step_with_default_assertions("Open shared ambient Docker sandbox tab").with_action(
+pub fn add_shared_ambient_bash_tab() -> TestStep {
+    new_step_with_default_assertions("Open shared ambient Bash tab").with_action(
         |app, window_id, _| {
             workspace_view(app, window_id).update(app, |workspace, ctx| {
-                workspace.add_shared_ambient_docker_sandbox_tab_for_integration_test(ctx);
+                workspace.add_shared_ambient_bash_tab_for_integration_test(ctx);
             });
         },
     )
 }
 
 pub fn wait_for_tab_count(expected_tab_count: usize) -> TestStep {
-    new_step_with_default_assertions("Wait for Docker sandbox tab")
+    new_step_with_default_assertions("Wait for ambient shell tab")
         .set_timeout(Duration::from_secs(30))
         .add_assertion(move |app, window_id| {
             let tab_count =
@@ -36,21 +36,26 @@ pub fn wait_for_tab_count(expected_tab_count: usize) -> TestStep {
         })
 }
 
-pub fn execute_agent_shell_exit(tab_index: usize, command: &'static str) -> TestStep {
-    TestStep::new("Execute agent shell exit").with_action(move |app, window_id, data| {
+fn execute_agent_command_step(
+    tab_index: usize,
+    command: &'static str,
+    result_key: &'static str,
+    name: &'static str,
+) -> TestStep {
+    TestStep::new(name).with_action(move |app, window_id, data| {
         let terminal = single_terminal_view_for_tab(app, window_id, tab_index);
         let terminal_view_id = terminal.id();
         let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
             let conversation_id =
-                history.start_new_conversation(terminal_view_id, false, false, false, ctx);
+                history.start_new_conversation(terminal_view_id, false, true, false, ctx);
             history.set_active_conversation_id(conversation_id, terminal_view_id, ctx);
             conversation_id
         });
         let action_id = AIAgentActionId::from(format!("shell-recovery-{conversation_id}"));
-        data.insert("recovery_action", (conversation_id, action_id.clone()));
+        data.insert(result_key, (conversation_id, action_id.clone()));
         let action_model = terminal.read(app, |terminal, _| terminal.ai_action_model().clone());
         action_model.update(app, |model, ctx| {
-            model.queue_action_for_integration_test(
+            model.execute_action_for_integration_test(
                 AIAgentAction {
                     id: action_id,
                     task_id: TaskId::new(format!("shell-recovery-{conversation_id}")),
@@ -72,6 +77,86 @@ pub fn execute_agent_shell_exit(tab_index: usize, command: &'static str) -> Test
     })
 }
 
+pub fn execute_agent_command(
+    tab_index: usize,
+    command: &'static str,
+    result_key: &'static str,
+) -> TestStep {
+    execute_agent_command_step(tab_index, command, result_key, "Execute agent command")
+}
+
+pub fn execute_agent_shell_exit(tab_index: usize, command: &'static str) -> TestStep {
+    execute_agent_command_step(
+        tab_index,
+        command,
+        "recovery_action",
+        "Execute agent shell exit",
+    )
+}
+
+pub fn wait_for_agent_command_result(
+    tab_index: usize,
+    result_key: &'static str,
+    expected_output: &'static str,
+) -> TestStep {
+    new_step_with_default_assertions("Wait for agent command result")
+        .set_timeout(Duration::from_secs(30))
+        .add_named_assertion_with_data_from_prior_step(
+            "Agent command completes successfully",
+            move |app, window_id, data| {
+                let (_, action_id) = data
+                    .get::<_, (AIConversationId, AIAgentActionId)>(result_key)
+                    .expect("agent command was queued");
+                single_terminal_view_for_tab(app, window_id, tab_index).read(app, |terminal, _| {
+                    let model = terminal.model.lock();
+                    let Some(block) = model.block_list().block_for_ai_action_id(action_id) else {
+                        return async_assert!(false, "agent command block not available");
+                    };
+                    let output = block.output_to_string();
+                    let exit_code = block.exit_code();
+                    async_assert!(
+                        block.is_done()
+                            && exit_code.was_successful()
+                            && output.contains(expected_output),
+                        "done={}, output={output:?}, exit_code={}",
+                        block.is_done(),
+                        exit_code.value(),
+                    )
+                })
+            },
+        )
+}
+
+pub fn sync_session_environment_variable(
+    tab_index: usize,
+    key: &'static str,
+    value: &'static str,
+) -> TestStep {
+    TestStep::new("Sync session environment variable").with_action(move |app, window_id, _| {
+        let (session_id, sessions, mut env_vars) =
+            single_terminal_view_for_tab(app, window_id, tab_index).read(app, |terminal, ctx| {
+                let session_id = terminal
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .session_id()
+                    .expect("terminal session is bootstrapped");
+                (
+                    session_id,
+                    terminal.sessions_model().clone(),
+                    terminal
+                        .sessions(ctx)
+                        .get_env_vars_for_session(session_id)
+                        .unwrap_or_default(),
+                )
+            });
+        env_vars.insert(key.to_owned(), value.to_owned());
+        sessions.update(app, |sessions, ctx| {
+            sessions.set_env_vars_for_session(session_id, env_vars, ctx);
+        });
+    })
+}
 fn recovered_command_result(
     terminal: &TerminalView,
     conversation_id: AIConversationId,

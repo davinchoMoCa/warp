@@ -12789,18 +12789,42 @@ impl Workspace {
     }
 
     #[cfg(feature = "integration_tests")]
-    pub fn add_shared_ambient_docker_sandbox_tab_for_integration_test(
+    pub fn add_shared_ambient_bash_tab_for_integration_test(
         &mut self,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.add_docker_sandbox_tab_with_shared_session_creator(
-            IsSharedSessionCreator::Yes {
-                source: SharedSessionSource::ambient_agent(Some(
-                    "123e4567-e89b-12d3-a456-426614174000".to_owned(),
-                )),
-            },
-            ctx,
-        );
+        #[cfg(feature = "local_tty")]
+        {
+            let shell =
+                AvailableShell::try_from("/bin/bash").expect("bash is required for this test");
+            let startup_directory = self.get_new_tab_startup_directory(
+                NewSessionSource::Tab,
+                Some(ctx.window_id()),
+                Some(&shell),
+                ctx,
+            );
+            self.add_tab_with_pane_layout(
+                PanesLayout::SingleTerminal(Box::new(NewTerminalOptions {
+                    shell: Some(shell),
+                    initial_directory: startup_directory,
+                    hide_homepage: true,
+                    is_shared_session_creator: IsSharedSessionCreator::Yes {
+                        source: SharedSessionSource::ambient_agent(Some(
+                            "123e4567-e89b-12d3-a456-426614174000".to_owned(),
+                        )),
+                    },
+                    ..Default::default()
+                })),
+                Arc::new(HashMap::new()),
+                None,
+                ctx,
+            );
+            ctx.notify();
+        }
+        #[cfg(not(feature = "local_tty"))]
+        {
+            let _ = ctx;
+        }
     }
 
     fn add_docker_sandbox_tab_with_shared_session_creator(
