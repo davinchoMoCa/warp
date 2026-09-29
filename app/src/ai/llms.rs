@@ -50,7 +50,7 @@ pub fn should_attach_aws_bedrock_credentials(scope: &dyn TeamScope, app: &AppCon
         || (AppExecutionMode::as_ref(app).is_autonomous()
             && matches!(
                 ApiKeyManager::as_ref(app).aws_credentials_refresh_strategy(),
-                AwsCredentialsRefreshStrategy::OidcManaged { .. }
+                AwsCredentialsRefreshStrategy::OidcManaged
             ))
 }
 

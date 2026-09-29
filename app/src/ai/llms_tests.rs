@@ -25,8 +25,7 @@ use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::team::MockTeamClient;
 use crate::server::server_api::workspace::MockWorkspaceClient;
 use crate::server::sync_queue::SyncQueue;
-use crate::settings::AISettings;
-use crate::settings::PrivacySettings;
+use crate::settings::{AISettings, PrivacySettings};
 use crate::terminal::input::models::query_model_picker_choices;
 use crate::test_util::settings::{
     initialize_settings_for_tests, initialize_settings_for_tests_with_mode,
@@ -886,13 +885,8 @@ fn cloud_host_opt_out_filters_picker_and_rejects_saved_models_without_blocking_o
             );
         });
         ApiKeyManager::handle(&app).update(&mut app, |manager, _| {
-            manager.set_aws_credentials_refresh_strategy(
-                AwsCredentialsRefreshStrategy::OidcManaged {
-                    task_id: Some("task".into()),
-                    role_arn: "arn:aws:iam::123:role/test".into(),
-                    region: "us-east-1".into(),
-                },
-            );
+            manager
+                .set_aws_credentials_refresh_strategy(AwsCredentialsRefreshStrategy::OidcManaged);
         });
         app.read(|ctx| {
             assert!(!should_attach_aws_bedrock_credentials(&respect_scope, ctx));
@@ -950,13 +944,8 @@ fn oidc_managed_cloud_request_can_use_bedrock_without_a_desktop_setting() {
         initialize_settings_for_tests_with_mode(&mut app, ExecutionMode::Sdk, true);
         app.add_singleton_model(UserWorkspaces::default_mock);
         ApiKeyManager::handle(&app).update(&mut app, |manager, ctx| {
-            manager.set_aws_credentials_refresh_strategy(
-                AwsCredentialsRefreshStrategy::OidcManaged {
-                    task_id: Some("task".into()),
-                    role_arn: "arn:aws:iam::123:role/test".into(),
-                    region: "us-east-1".into(),
-                },
-            );
+            manager
+                .set_aws_credentials_refresh_strategy(AwsCredentialsRefreshStrategy::OidcManaged);
             manager.set_aws_credentials_state(
                 AwsCredentialsState::Loaded {
                     credentials: AwsCredentials::new("access".into(), "secret".into(), None, None),
