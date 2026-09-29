@@ -34,25 +34,13 @@ const CONVERSATION_TOKEN: &str = "server-conversation-token";
 fn factory_handoff_v1_footer_hides_model_selector_in_default_and_custom_layouts() {
     App::test((), |mut app| async move {
         let _cloud_mode_v2 = FeatureFlag::CloudModeInputV2.override_enabled(false);
+        let _factory_selector = FeatureFlag::CloudModeFactorySelector.override_enabled(true);
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let footer = terminal.read(&app, |view, ctx| {
             view.input().as_ref(ctx).agent_input_footer().clone()
         });
         let model_selector_id = footer.read(&app, |footer, _| footer.model_selector.id());
-        footer.update(&mut app, |footer, ctx| {
-            footer.handoff_compose_state.update(ctx, |state, ctx| {
-                state.activate(HandoffEntryPoint::Ampersand, ctx);
-                state.set_choice(
-                    CloudSelectorChoice::Factory {
-                        uid: "factory".to_owned(),
-                        environment_uid: SyncId::ServerId(ServerId::from(12)),
-                        foreman_agent_uid: "foreman".to_owned(),
-                    },
-                    ctx,
-                );
-            });
-        });
 
         for layout in [
             AgentToolbarChipSelection::Default,
@@ -67,7 +55,18 @@ fn factory_handoff_v1_footer_hides_model_selector_in_default_and_custom_layouts(
                     .set_value(layout, ctx)
                     .expect("toolbar layout");
             });
-            footer.read(&app, |footer, ctx| {
+            footer.update(&mut app, |footer, ctx| {
+                footer.handoff_compose_state.update(ctx, |state, ctx| {
+                    state.activate(HandoffEntryPoint::Ampersand, ctx);
+                    state.set_choice(
+                        CloudSelectorChoice::Factory {
+                            uid: "factory".to_owned(),
+                            environment_uid: SyncId::ServerId(ServerId::from(12)),
+                            foreman_agent_uid: "foreman".to_owned(),
+                        },
+                        ctx,
+                    );
+                });
                 assert!(footer.is_factory_composing(ctx));
                 assert!(
                     !footer

@@ -4691,6 +4691,7 @@ impl Input {
         launch: PendingCloudLaunch,
         environment_id: Option<SyncId>,
         selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
+        invalidate_factory_choice: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         self.activate_cloud_handoff_compose(HandoffEntryPoint::Ampersand, ctx);
@@ -4702,7 +4703,16 @@ impl Input {
                 model.append_pending_attachments(vec![attachment], ctx);
             }
         });
-        if let Some(choice) = selected_choice {
+        if invalidate_factory_choice
+            && matches!(
+                selected_choice.as_ref(),
+                Some(crate::ai::cloud_environments::CloudSelectorChoice::Factory { .. })
+            )
+        {
+            self.handoff_compose_state.update(ctx, |state, ctx| {
+                state.invalidate_choice(ctx);
+            });
+        } else if let Some(choice) = selected_choice {
             self.handoff_compose_state.update(ctx, |state, ctx| {
                 state.set_choice(choice, ctx);
             });

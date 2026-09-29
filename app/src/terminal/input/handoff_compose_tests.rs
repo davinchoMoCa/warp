@@ -10,7 +10,7 @@ use crate::test_util::add_window_with_terminal;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 
 #[test]
-fn restoring_failed_factory_handoff_reinstates_source_draft() {
+fn restoring_failed_factory_handoff_reinstates_draft_and_requires_replacement() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -36,6 +36,7 @@ fn restoring_failed_factory_handoff_reinstates_source_draft() {
                     },
                     Some(choice.environment_id()),
                     Some(choice.clone()),
+                    true,
                     ctx,
                 );
             });
@@ -51,6 +52,11 @@ fn restoring_failed_factory_handoff_reinstates_source_draft() {
                     .len(),
                 1
             );
+            let state = input.handoff_compose_state.as_ref(ctx);
+            assert!(state.is_active());
+            assert!(state.selection_invalidated());
+            assert!(state.selected_choice().is_none());
+            assert!(state.selected_environment_id().is_none());
         });
     });
 }

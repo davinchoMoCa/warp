@@ -6,6 +6,9 @@ pub(crate) mod codex_modal;
 pub mod conversation_list;
 #[cfg(enable_crash_recovery)]
 mod crash_recovery;
+#[cfg(all(test, feature = "local_fs", not(target_family = "wasm")))]
+#[path = "view_factory_handoff_tests.rs"]
+mod factory_handoff_tests;
 pub(crate) mod feature_intro_modal;
 pub(crate) mod free_ai_removal_modal;
 pub mod global_search;
@@ -193,9 +196,10 @@ use crate::ai::blocklist::agent_view::editor::{AgentToolbarEditorEvent, AgentToo
 use crate::ai::blocklist::handoff;
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
 use crate::ai::blocklist::handoff::{
-    HandoffCommitOutcome, HandoffLaunchAttachments, HandoffPrepareError, HandoffPrepareInput,
-    HandoffPresentationSnapshot, HandoffRestoration, HandoffTargetMaterialization,
-    MaterializeHandoffTarget, PendingCloudLaunch, execute_handoff, prepare_handoff,
+    HandoffCommitFailure, HandoffCommitOutcome, HandoffLaunchAttachments, HandoffPrepareError,
+    HandoffPrepareInput, HandoffPresentationSnapshot, HandoffRestoration,
+    HandoffTargetMaterialization, MaterializeHandoffTarget, PendingCloudLaunch, execute_handoff,
+    prepare_handoff,
 };
 use crate::ai::blocklist::history_model::{CloudConversationData, load_conversation_from_server};
 use crate::ai::blocklist::inline_action::code_diff_view::CodeDiffView;
@@ -15743,6 +15747,7 @@ impl Workspace {
         launch: Option<PendingCloudLaunch>,
         environment_id: Option<SyncId>,
         selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
+        invalidate_factory_choice: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         let Some(launch) = launch else {
@@ -15751,7 +15756,13 @@ impl Workspace {
         source_view.update(ctx, |view, ctx| {
             let input = view.input().clone();
             input.update(ctx, |input, ctx| {
-                input.restore_cloud_handoff_draft(launch, environment_id, selected_choice, ctx);
+                input.restore_cloud_handoff_draft(
+                    launch,
+                    environment_id,
+                    selected_choice,
+                    invalidate_factory_choice,
+                    ctx,
+                );
             });
         });
     }
@@ -15961,8 +15972,7 @@ impl Workspace {
                 self.handle_handoff_prepare_error(
                     &source_view,
                     launch,
-                    environment_id,
-                    selected_choice,
+                    (environment_id, selected_choice),
                     intent,
                     error,
                     ctx,
@@ -16002,41 +16012,18 @@ impl Workspace {
                     restoration,
                     intent,
                     Some(error),
+                    None,
                     ctx,
                 );
             }
-            HandoffCommitOutcome::Failed(mut failure) => {
-                let target = model_slot.lock().ok().and_then(|slot| slot.clone());
-                if let Some((target_view, model)) = target {
-                    let restoration = if failure.request.is_none() {
-                        failure.restoration.take()
-                    } else {
-                        None
-                    };
-                    model.update(ctx, |model, ctx| {
-                        model.handle_handoff_commit_failure(failure, ctx);
-                    });
-                    if restoration.is_some() {
-                        target_view.update(ctx, |view, ctx| {
-                            view.abort_provisional_handoff_target(&model, ctx);
-                        });
-                        workspace.restore_handoff_after_commit_failure(
-                            &source_view,
-                            restoration,
-                            intent,
-                            None,
-                            ctx,
-                        );
-                    }
-                } else {
-                    workspace.restore_handoff_after_commit_failure(
-                        &source_view,
-                        failure.restoration,
-                        intent,
-                        None,
-                        ctx,
-                    );
-                }
+            HandoffCommitOutcome::Failed(failure) => {
+                workspace.handle_failed_handoff_commit(
+                    &source_view,
+                    model_slot,
+                    failure,
+                    intent,
+                    ctx,
+                );
             }
             HandoffCommitOutcome::Cancelled => {}
             HandoffCommitOutcome::Created(created) => {
@@ -16052,6 +16039,55 @@ impl Workspace {
                 }
             }
         });
+    }
+
+    #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    fn handle_failed_handoff_commit(
+        &mut self,
+        source_view: &ViewHandle<TerminalView>,
+        target: ProvisionalHandoffTarget,
+        mut failure: HandoffCommitFailure,
+        intent: LocalToCloudHandoffIntent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let provisional = target.lock().ok().and_then(|slot| slot.clone());
+        let factory_failure = failure
+            .request
+            .as_ref()
+            .is_some_and(|request| request.factory_uid.is_some())
+            || (provisional.is_some()
+                && failure.request.is_none()
+                && failure
+                    .restoration
+                    .as_ref()
+                    .and_then(|restoration| restoration.selected_choice.as_ref())
+                    .is_some_and(|choice| {
+                        matches!(
+                            choice,
+                            crate::ai::cloud_environments::CloudSelectorChoice::Factory { .. }
+                        )
+                    }));
+        if factory_failure || failure.request.is_none() || provisional.is_none() {
+            if let Some((target_view, model)) = provisional {
+                target_view.update(ctx, |view, ctx| {
+                    view.abort_provisional_handoff_target(&model, ctx);
+                });
+            }
+            let error_message =
+                factory_failure.then(|| handoff::handoff_dispatch_error(&failure.issue));
+            self.restore_handoff_after_commit_failure(
+                source_view,
+                failure.restoration.take(),
+                intent,
+                None,
+                error_message,
+                ctx,
+            );
+        } else if let Some((_, model)) = provisional {
+            model.update(ctx, |model, ctx| {
+                model.handle_handoff_commit_failure(failure, ctx);
+            });
+        }
     }
 
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
@@ -16168,8 +16204,10 @@ impl Workspace {
         &mut self,
         source_view: &ViewHandle<TerminalView>,
         launch: Option<PendingCloudLaunch>,
-        environment_id: Option<SyncId>,
-        selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
+        selection: (
+            Option<SyncId>,
+            Option<crate::ai::cloud_environments::CloudSelectorChoice>,
+        ),
         intent: LocalToCloudHandoffIntent,
         error: HandoffPrepareError,
         ctx: &mut ViewContext<Self>,
@@ -16182,11 +16220,13 @@ impl Workspace {
             prompt: launch.prompt,
             attachments: HandoffLaunchAttachments::default(),
         });
+        let (environment_id, selected_choice) = selection;
         Self::restore_source_handoff_draft(
             source_view,
             launch,
             environment_id,
             selected_choice,
+            error == HandoffPrepareError::InvalidFactory,
             ctx,
         );
         let message = match error {
@@ -16205,12 +16245,14 @@ impl Workspace {
             HandoffPrepareError::EmptySourceAndPrompt => {
                 "Nothing to hand off — start a conversation first."
             }
+            HandoffPrepareError::InvalidFactory => {
+                "Factory is no longer available. Choose a replacement."
+            }
             HandoffPrepareError::SourceConversationChanged
             | HandoffPrepareError::SourceNotInProgress
             | HandoffPrepareError::HandoffDisabled
             | HandoffPrepareError::MissingRequiredEnvironment
-            | HandoffPrepareError::InvalidEnvironment
-            | HandoffPrepareError::InvalidFactory => {
+            | HandoffPrepareError::InvalidEnvironment => {
                 "Couldn't start the handoff. Check your selection and try again."
             }
         };
@@ -16231,12 +16273,15 @@ impl Workspace {
         restoration: Option<HandoffRestoration>,
         intent: LocalToCloudHandoffIntent,
         prepare_error: Option<HandoffPrepareError>,
+        error_message: Option<String>,
         ctx: &mut ViewContext<Self>,
     ) {
         Self::record_automatic_handoff_failed(intent, ctx);
         if !intent.shows_user_feedback() {
             return;
         }
+        let invalidate_factory_choice =
+            error_message.is_some() || prepare_error == Some(HandoffPrepareError::InvalidFactory);
         if let Some(restoration) = restoration {
             let launch = PendingCloudLaunch {
                 prompt: restoration.prompt,
@@ -16250,21 +16295,22 @@ impl Workspace {
                 Some(launch),
                 restoration.environment_id,
                 restoration.selected_choice,
+                invalidate_factory_choice,
                 ctx,
             );
         }
-        let message = if prepare_error.is_some() {
-            "The handoff settings changed before it started. Review them and try again."
+        let message = if let Some(error_message) = error_message {
+            format!("{error_message} Choose a replacement.")
+        } else if prepare_error == Some(HandoffPrepareError::InvalidFactory) {
+            "Factory is no longer available. Choose a replacement.".to_owned()
+        } else if prepare_error.is_some() {
+            "The handoff settings changed before it started. Review them and try again.".to_owned()
         } else {
-            "Couldn't start the handoff. Check your network connection and try again."
+            "Couldn't start the handoff. Check your network connection and try again.".to_owned()
         };
         let window_id = ctx.window_id();
         WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-            toast_stack.add_ephemeral_toast(
-                DismissibleToast::error(message.to_owned()),
-                window_id,
-                ctx,
-            );
+            toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
         });
     }
 

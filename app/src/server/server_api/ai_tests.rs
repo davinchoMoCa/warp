@@ -16,7 +16,7 @@ use super::{
     RunFollowupRequest, RunSortBy, RunSortOrder, SpawnAgentRequest, TaskGitCredentialsError,
     TaskListFilter, TaskStatusUpdate, UploadFieldValue, UserQueryMode,
     agent_task_status_message_input, build_fork_conversation_url, build_list_agent_runs_url,
-    build_run_followup_url, factory_selector_path, is_unknown_git_credential_schema_error,
+    build_run_followup_url, is_unknown_git_credential_schema_error,
 };
 use crate::notebooks::NotebookId;
 use crate::server::ids::ServerId;
@@ -27,17 +27,47 @@ use crate::workspaces::user_workspaces::{TeamContextForOperation, TeamlessScopeF
 fn request_scope_for_team(team_uid: ServerId) -> RequestTeamScope {
     RequestTeamScope::from_scope(&TeamContextForOperation::new_for_test(team_uid))
 }
-
 #[test]
-fn factory_selector_url_encodes_team_and_cursor() {
+fn factory_selector_sends_team_scope_and_parses_page() {
     let team_uid = ServerId::from(7);
-    assert_eq!(
-        factory_selector_path(&team_uid.uid(), Some("next page/1")),
-        format!(
-            "factory/selector-options?team_uid={}&cursor=next%20page%2F1",
-            team_uid.uid()
-        )
-    );
+    let team_uid_string = team_uid.uid().to_string();
+    let request = {
+        let mut server = warp_core::channel::ChannelState::mock_server();
+        server
+            .mock("GET", "/api/v1/factory/selector-options")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("team_uid".to_owned(), team_uid_string.clone()),
+                Matcher::UrlEncoded("cursor".to_owned(), "next page/1".to_owned()),
+            ]))
+            .match_header(TEAM_UID_HEADER, team_uid_string.as_str())
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"factories":[{{"uid":"factory-12","team_uid":"{team_uid_string}","name":"Build","alias":"build","default_environment_uid":"env-12","foreman_agent_uid":"foreman-12"}}],"managed_environment_uids":["env-12"],"page_info":{{"has_next_page":true,"next_cursor":"cursor-2"}}}}"#
+            ))
+            .create()
+    };
+    let server_api = ServerApi::new_for_test();
+    server_api
+        .base_client
+        .set_ambient_workload_token_for_test("mock-workload-token".to_owned(), None);
+
+    let result = block_on(server_api.get_factory_selector_options(
+        request_scope_for_team(team_uid),
+        Some("next page/1".to_owned()),
+    ))
+    .unwrap();
+
+    request.assert();
+    assert_eq!(result.factories.len(), 1);
+    assert_eq!(result.factories[0].uid, "factory-12");
+    assert_eq!(result.factories[0].team_uid, team_uid_string);
+    assert_eq!(result.factories[0].name, "Build");
+    assert_eq!(result.factories[0].alias.as_deref(), Some("build"));
+    assert_eq!(result.factories[0].default_environment_uid, "env-12");
+    assert_eq!(result.factories[0].foreman_agent_uid, "foreman-12");
+    assert_eq!(result.managed_environment_uids, ["env-12"]);
+    assert!(result.page_info.has_next_page);
+    assert_eq!(result.page_info.next_cursor.as_deref(), Some("cursor-2"));
 }
 
 #[test]
