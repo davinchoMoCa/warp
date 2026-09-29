@@ -31,6 +31,13 @@ fn parse_session_id_from_link(session_link: &str) -> Option<SessionId> {
     })
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct TaskFactoryAttribution {
+    pub uid: String,
+    pub name: String,
+    pub environment_name: String,
+}
+
 fn parse_execution_session_id(execution: RunExecution<'_>) -> Option<SessionId> {
     execution
         .session_id
@@ -248,6 +255,8 @@ pub struct AmbientAgentTask {
     /// Snapshot of the agent config used to create the task.
     #[serde(default, alias = "agent_config")]
     pub agent_config_snapshot: Option<AgentConfigSnapshot>,
+    #[serde(default)]
+    pub factory: Option<TaskFactoryAttribution>,
     #[serde(default, deserialize_with = "deserialize_artifacts")]
     pub artifacts: Vec<Artifact>,
 

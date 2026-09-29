@@ -32,6 +32,7 @@ fn make_task(snapshot_name: Option<&str>, title: &str) -> AmbientAgentTask {
         conversation_id: None,
         request_usage: None,
         is_sandbox_running: false,
+        factory: None,
         agent_config_snapshot,
         artifacts: vec![],
         last_event_sequence: None,

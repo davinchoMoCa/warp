@@ -15561,6 +15561,7 @@ impl Workspace {
                             WorkspaceAction::OpenLocalToCloudHandoffPane {
                                 launch,
                                 environment_id: Some(env_id),
+                                selected_choice: None,
                                 entry_point,
                             },
                         );
@@ -15732,6 +15733,7 @@ impl Workspace {
         source_view: &ViewHandle<TerminalView>,
         launch: Option<PendingCloudLaunch>,
         environment_id: Option<SyncId>,
+        selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
         ctx: &mut ViewContext<Self>,
     ) {
         let Some(launch) = launch else {
@@ -15740,7 +15742,7 @@ impl Workspace {
         source_view.update(ctx, |view, ctx| {
             let input = view.input().clone();
             input.update(ctx, |input, ctx| {
-                input.restore_cloud_handoff_draft(launch, environment_id, ctx);
+                input.restore_cloud_handoff_draft(launch, environment_id, selected_choice, ctx);
             });
         });
     }
@@ -15817,6 +15819,7 @@ impl Workspace {
         &mut self,
         launch: Option<PendingCloudLaunch>,
         environment_id: Option<SyncId>,
+        selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
         entry_point: HandoffEntryPoint,
         ctx: &mut ViewContext<Self>,
     ) {
@@ -15843,6 +15846,7 @@ impl Workspace {
             source_view,
             launch,
             environment_id,
+            selected_choice,
             LocalToCloudHandoffIntent::UserInitiated(entry_point),
             ctx,
         );
@@ -15879,6 +15883,7 @@ impl Workspace {
         source_view: ViewHandle<TerminalView>,
         launch: Option<PendingCloudLaunch>,
         environment_id: Option<SyncId>,
+        selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
         intent: LocalToCloudHandoffIntent,
         ctx: &mut ViewContext<Self>,
     ) {
@@ -15938,6 +15943,7 @@ impl Workspace {
         .with_launch(launch.clone())
         .with_transfer_pending_attachments(intent.shows_user_feedback())
         .with_environment_id(environment_id)
+        .with_selected_choice(selected_choice.clone())
         .with_cancellation_reason(cancellation_reason)
         .with_require_in_progress_source(intent.expected_conversation_id().is_some());
         let pending = match prepare_handoff(prepare_input, ctx) {
@@ -15947,6 +15953,7 @@ impl Workspace {
                     &source_view,
                     launch,
                     environment_id,
+                    selected_choice,
                     intent,
                     error,
                     ctx,
@@ -16115,7 +16122,11 @@ impl Workspace {
             }
         }
         model_handle.update(ctx, |model, ctx| {
-            model.set_environment_id(presentation.environment_id, ctx);
+            if let Some(choice) = presentation.selected_choice {
+                model.set_choice(choice, ctx);
+            } else {
+                model.set_environment_id(presentation.environment_id, ctx);
+            }
             model.begin_local_to_cloud_handoff(request, team_scope, cancel, ctx);
         });
 
@@ -16135,6 +16146,7 @@ impl Workspace {
         source_view: &ViewHandle<TerminalView>,
         launch: Option<PendingCloudLaunch>,
         environment_id: Option<SyncId>,
+        selected_choice: Option<crate::ai::cloud_environments::CloudSelectorChoice>,
         intent: LocalToCloudHandoffIntent,
         error: HandoffPrepareError,
         ctx: &mut ViewContext<Self>,
@@ -16147,7 +16159,13 @@ impl Workspace {
             prompt: launch.prompt,
             attachments: HandoffLaunchAttachments::default(),
         });
-        Self::restore_source_handoff_draft(source_view, launch, environment_id, ctx);
+        Self::restore_source_handoff_draft(
+            source_view,
+            launch,
+            environment_id,
+            selected_choice,
+            ctx,
+        );
         let message = match error {
             HandoffPrepareError::LongRunningCommand => {
                 "Can't hand off while a command is running. Cancel the command or wait for it to finish."
@@ -16168,7 +16186,8 @@ impl Workspace {
             | HandoffPrepareError::SourceNotInProgress
             | HandoffPrepareError::HandoffDisabled
             | HandoffPrepareError::MissingRequiredEnvironment
-            | HandoffPrepareError::InvalidEnvironment => {
+            | HandoffPrepareError::InvalidEnvironment
+            | HandoffPrepareError::InvalidFactory => {
                 "Couldn't start the handoff. Check your selection and try again."
             }
         };
@@ -16207,6 +16226,7 @@ impl Workspace {
                 source_view,
                 Some(launch),
                 restoration.environment_id,
+                restoration.selected_choice,
                 ctx,
             );
         }
@@ -24447,18 +24467,20 @@ impl TypedActionView for Workspace {
             OpenLocalToCloudHandoffPane {
                 launch,
                 environment_id,
+                selected_choice,
                 entry_point,
             } => {
                 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
                 self.start_local_to_cloud_handoff(
                     launch.clone(),
                     *environment_id,
+                    selected_choice.clone(),
                     *entry_point,
                     ctx,
                 );
                 #[cfg(not(all(feature = "local_fs", not(target_family = "wasm"))))]
                 {
-                    let _ = (launch, environment_id, entry_point);
+                    let _ = (launch, environment_id, selected_choice, entry_point);
                 }
             }
             AutoHandoffActiveAgentToCloud {
@@ -24481,6 +24503,7 @@ impl TypedActionView for Workspace {
                             self.start_local_to_cloud_handoff_from_source(
                                 source_view,
                                 launch,
+                                None,
                                 None,
                                 intent,
                                 ctx,

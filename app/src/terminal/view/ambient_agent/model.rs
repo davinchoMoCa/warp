@@ -26,7 +26,7 @@ use crate::ai::ambient_agents::{AgentSource, AmbientAgentTaskId};
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
 use crate::ai::blocklist::handoff::{HandoffCommitFailure, HandoffCreated, handoff_dispatch_error};
-use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
+use crate::ai::cloud_environments::{CloudAmbientAgentEnvironment, CloudSelectorChoice};
 use crate::ai::execution_profiles::{
     CloudAgentComputerUseState, resolve_cloud_agent_computer_use_state,
 };
@@ -142,6 +142,10 @@ pub struct AmbientAgentViewModel {
 
     /// Selected cloud environment to launch the ambient agent with.
     environment_id: Option<SyncId>,
+    selected_choice: Option<CloudSelectorChoice>,
+    selection_invalidated: bool,
+    viewed_factory_name: Option<String>,
+    viewed_environment_name: Option<String>,
     /// True when `environment_id` came from an existing run config rather than from local
     /// environment selection/defaulting. Existing runs may reference an environment before the
     /// local CloudModel has loaded it, so initial-load validation should not clear it.
@@ -252,6 +256,10 @@ impl AmbientAgentViewModel {
             terminal_view_id,
             terminal_view,
             environment_id: None,
+            selected_choice: None,
+            selection_invalidated: false,
+            viewed_factory_name: None,
+            viewed_environment_name: None,
             environment_id_from_viewed_task: false,
             progress_timer_handle: None,
             ui_state,
@@ -418,6 +426,82 @@ impl AmbientAgentViewModel {
         self.environment_id.as_ref()
     }
 
+    pub(crate) fn selected_choice(&self) -> Option<&CloudSelectorChoice> {
+        self.selected_choice.as_ref()
+    }
+
+    pub(crate) fn is_factory_selected(&self) -> bool {
+        matches!(
+            self.selected_choice,
+            Some(CloudSelectorChoice::Factory { .. })
+        )
+    }
+
+    pub(crate) fn can_spawn_selected_choice(
+        &self,
+        scope: &impl TeamScope,
+        ctx: &AppContext,
+    ) -> bool {
+        if !FeatureFlag::CloudModeFactorySelector.is_enabled() {
+            return true;
+        }
+        if self.selection_invalidated {
+            return false;
+        }
+        match (
+            self.selected_choice.as_ref(),
+            crate::ai::cloud_environments::FactorySelectorCatalog::as_ref(ctx).state_for(scope),
+        ) {
+            (
+                Some(choice @ CloudSelectorChoice::Factory { uid, .. }),
+                Some(crate::ai::cloud_environments::FactorySelectorState::Ready(snapshot)),
+            ) => snapshot
+                .factory(uid)
+                .is_some_and(|row| &row.choice == choice),
+            (
+                Some(CloudSelectorChoice::Environment(id)),
+                Some(crate::ai::cloud_environments::FactorySelectorState::Ready(snapshot)),
+            ) => {
+                !snapshot.is_managed(*id)
+                    && CloudAmbientAgentEnvironment::get_by_id(id, ctx).is_some_and(|environment| {
+                        crate::ai::cloud_environments::environment_matches_scope(
+                            environment,
+                            scope,
+                            true,
+                        )
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn selection_invalidated(&self) -> bool {
+        self.selection_invalidated
+    }
+
+    pub(crate) fn viewed_factory_name(&self) -> Option<&str> {
+        self.viewed_factory_name.as_deref()
+    }
+
+    pub(crate) fn viewed_environment_name(&self) -> Option<&str> {
+        self.viewed_environment_name.as_deref()
+    }
+
+    pub(crate) fn invalidate_choice(&mut self, ctx: &mut ModelContext<Self>) {
+        self.selected_choice = None;
+        self.environment_id = None;
+        self.selection_invalidated = true;
+        ctx.emit(AmbientAgentViewModelEvent::EnvironmentSelected);
+    }
+
+    pub(crate) fn set_choice(&mut self, choice: CloudSelectorChoice, ctx: &mut ModelContext<Self>) {
+        self.environment_id = Some(choice.environment_id());
+        self.selected_choice = Some(choice);
+        self.selection_invalidated = false;
+        self.environment_id_from_viewed_task = false;
+        ctx.emit(AmbientAgentViewModelEvent::EnvironmentSelected);
+    }
+
     pub fn selected_harness(&self) -> Harness {
         if self.is_local_to_cloud_handoff() {
             Harness::Oz
@@ -427,6 +511,9 @@ impl AmbientAgentViewModel {
     }
 
     pub fn set_harness(&mut self, harness: Harness, ctx: &mut ModelContext<Self>) {
+        if self.is_factory_selected() {
+            return;
+        }
         // for local to cloud handoff, oz is the only option
         // (we'll need to update this to lock to the correct 3p harness if/when
         // we implement local -> cloud handoff for non-oz conversations).
@@ -447,6 +534,9 @@ impl AmbientAgentViewModel {
     }
 
     pub fn set_worker_host(&mut self, worker_host: Option<String>) {
+        if self.is_factory_selected() {
+            return;
+        }
         self.worker_host = worker_host;
     }
 
@@ -464,6 +554,9 @@ impl AmbientAgentViewModel {
         reasoning_level: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) {
+        if self.is_factory_selected() {
+            return;
+        }
         if self.harness_model_id == harness_model_id
             && self.harness_reasoning_level == reasoning_level
         {
@@ -483,6 +576,9 @@ impl AmbientAgentViewModel {
         name: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) {
+        if self.is_factory_selected() {
+            return;
+        }
         if self.harness_auth_secret_name == name {
             return;
         }
@@ -682,6 +778,8 @@ impl AmbientAgentViewModel {
             return;
         }
         self.environment_id = environment_id;
+        self.selected_choice = environment_id.map(CloudSelectorChoice::Environment);
+        self.selection_invalidated = false;
         self.environment_id_from_viewed_task = false;
         ctx.emit(AmbientAgentViewModelEvent::EnvironmentSelected);
     }
@@ -833,6 +931,12 @@ impl AmbientAgentViewModel {
             move |me, result, ctx| match result {
                 Ok(task) => {
                     me.source = task.source.clone();
+                    me.viewed_environment_name = task
+                        .factory
+                        .as_ref()
+                        .map(|factory| factory.environment_name.clone());
+                    me.viewed_factory_name =
+                        task.factory.as_ref().map(|factory| factory.name.clone());
                     me.apply_viewed_task_config_snapshot(task.agent_config_snapshot.as_ref(), ctx);
                     ctx.emit(AmbientAgentViewModelEvent::ViewerHarnessResolved);
                 }
@@ -1047,6 +1151,10 @@ impl AmbientAgentViewModel {
     pub fn reset_for_new_cloud_prompt(&mut self, ctx: &mut ModelContext<Self>) {
         self.status = Status::Composing;
         self.environment_id = None;
+        self.selected_choice = None;
+        self.selection_invalidated = false;
+        self.viewed_factory_name = None;
+        self.viewed_environment_name = None;
         self.environment_id_from_viewed_task = false;
         self.task_id = None;
         self.source = None;
@@ -1084,6 +1192,15 @@ impl AmbientAgentViewModel {
         scope: &impl TeamScope,
         ctx: &AppContext,
     ) -> AgentConfigSnapshot {
+        if let Some(CloudSelectorChoice::Factory {
+            environment_uid, ..
+        }) = &self.selected_choice
+        {
+            return AgentConfigSnapshot {
+                environment_id: Some(environment_uid.to_string()),
+                ..Default::default()
+            };
+        }
         let selected_harness = self.selected_harness();
         let computer_use_enabled = if selected_harness == Harness::Oz {
             // If the harness is Oz, determine computer use based on workspace AI autonomy settings.
@@ -1141,7 +1258,18 @@ impl AmbientAgentViewModel {
         scope: &impl TeamScope,
         ctx: &mut ModelContext<Self>,
     ) {
+        if !self.can_spawn_selected_choice(scope, ctx) {
+            return;
+        }
         let config = Some(self.build_default_spawn_config(scope, ctx));
+        let (factory_uid, agent_identity_uid) = match &self.selected_choice {
+            Some(CloudSelectorChoice::Factory {
+                uid,
+                foreman_agent_uid,
+                ..
+            }) => (Some(uid.clone()), Some(foreman_agent_uid.clone())),
+            _ => (None, None),
+        };
 
         let (prompt, mode) = extract_user_query_mode(prompt);
         let request = SpawnAgentRequest {
@@ -1150,7 +1278,8 @@ impl AmbientAgentViewModel {
             config,
             title: None,
             team: Some(scope.team_uid().is_some()),
-            agent_identity_uid: None,
+            agent_identity_uid,
+            factory_uid,
             skill: None,
             attachments,
             interactive: None,

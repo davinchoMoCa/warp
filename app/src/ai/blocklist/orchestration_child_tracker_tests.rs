@@ -84,6 +84,7 @@ fn seed_row(task_id: AmbientAgentTaskId) -> Box<AmbientAgentTask> {
         executor: None,
         conversation_id: None,
         request_usage: None,
+        factory: None,
         agent_config_snapshot: None,
         artifacts: vec![],
         is_sandbox_running: false,

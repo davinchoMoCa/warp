@@ -282,6 +282,8 @@ pub struct SpawnAgentRequest {
     /// Agent identity UID to use as the execution principal for the run.
     #[serde(rename = "agent_identity_uid", skip_serializing_if = "Option::is_none")]
     pub agent_identity_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factory_uid: Option<String>,
     /// Use a Claude-compatible skill as the base prompt.
     /// Format: "repo:skill_name" or just "skill_name".
     /// The skill is resolved at runtime in the agent environment.
@@ -321,6 +323,29 @@ pub struct SpawnAgentRequest {
     /// universal hidden first-turn orchestration handoff message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestration_handoff: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct FactorySelectorOption {
+    pub uid: String,
+    pub team_uid: String,
+    pub name: String,
+    pub alias: Option<String>,
+    pub default_environment_uid: String,
+    pub foreman_agent_uid: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FactorySelectorPageInfo {
+    pub has_next_page: bool,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FactorySelectorOptionsResponse {
+    pub factories: Vec<FactorySelectorOption>,
+    pub managed_environment_uids: Vec<String>,
+    pub page_info: FactorySelectorPageInfo,
 }
 
 /// Server-minted token returned by `POST /agent/handoff/upload-snapshot` that scopes a batch
@@ -1341,6 +1366,12 @@ pub trait AIClient: 'static + Send + Sync {
         request: SpawnAgentRequest,
         team_scope: RequestTeamScope,
     ) -> anyhow::Result<SpawnAgentResponse, anyhow::Error>;
+
+    async fn get_factory_selector_options(
+        &self,
+        team_scope: RequestTeamScope,
+        cursor: Option<String>,
+    ) -> anyhow::Result<FactorySelectorOptionsResponse>;
 
     /// Allocate an initial snapshot token and presigned upload URLs for staging local-to-cloud
     /// handoff snapshot files before the corresponding cloud task exists.
@@ -2470,6 +2501,23 @@ impl AIClient for ServerApi {
         team_scope: RequestTeamScope,
     ) -> anyhow::Result<ListConnectedSelfHostedWorkersResponse, anyhow::Error> {
         self.get_public_api_for_team(CONNECTED_SELF_HOSTED_WORKERS_PATH, team_scope)
+            .await
+    }
+
+    async fn get_factory_selector_options(
+        &self,
+        team_scope: RequestTeamScope,
+        cursor: Option<String>,
+    ) -> anyhow::Result<FactorySelectorOptionsResponse> {
+        let team_uid = team_scope
+            .team_uid()
+            .ok_or_else(|| anyhow!("Factory selector requires a team"))?;
+        let mut path = format!("factory/selector-options?team_uid={}", team_uid.uid());
+        if let Some(cursor) = cursor {
+            path.push_str("&cursor=");
+            path.push_str(&urlencoding::encode(&cursor));
+        }
+        self.get_public_api_with_team_scope(&path, Some(team_scope))
             .await
     }
 

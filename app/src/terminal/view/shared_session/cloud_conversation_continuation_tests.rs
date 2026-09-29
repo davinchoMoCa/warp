@@ -220,6 +220,7 @@ fn ambient_agent_task(
         conversation_id: Some(conversation_token.to_string()),
         request_usage: None,
         is_sandbox_running: false,
+        factory: None,
         agent_config_snapshot: None,
         artifacts: vec![],
         last_event_sequence: None,

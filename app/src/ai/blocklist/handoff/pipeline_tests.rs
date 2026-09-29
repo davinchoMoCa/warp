@@ -32,6 +32,109 @@ fn task_id() -> AmbientAgentTaskId {
         .parse()
         .expect("valid task id")
 }
+
+#[test]
+fn factory_handoff_uses_the_foreman_and_only_its_default_environment() {
+    let mock = Arc::new(MockAIClient::new());
+    let mut pending = pending(mock, None, false, "continue");
+    let factory_environment = SyncId::ServerId(ServerId::from(12));
+    let ordinary_environment = SyncId::ServerId(ServerId::from(13));
+    let choice = CloudSelectorChoice::Factory {
+        uid: "factory-12".to_owned(),
+        environment_uid: factory_environment,
+        foreman_agent_uid: "foreman-12".to_owned(),
+    };
+    pending.set_valid_factory_choices(vec![choice.clone()]);
+    pending.set_choice(choice.clone(), true);
+
+    assert_eq!(
+        pending.presentation_snapshot().selected_choice,
+        Some(choice.clone())
+    );
+    assert_eq!(
+        pending.config.environment_id.as_deref(),
+        Some(factory_environment.to_string().as_str())
+    );
+    assert!(pending.config.model_id.is_none());
+    assert!(pending.config.computer_use_enabled.is_none());
+    assert!(pending.validate().is_ok());
+
+    let request = build_spawn_request(
+        SpawnReadyHandoff {
+            prompt: pending.prompt.clone(),
+            source_conversation_active: false,
+            config: pending.config.clone(),
+            selected_choice: pending.selected_choice.clone(),
+            title: None,
+            attachments: Vec::new(),
+            snapshot_disabled: false,
+            orchestration_handoff: None,
+        },
+        None,
+        None,
+        pending.team_scope,
+    );
+    assert_eq!(request.factory_uid.as_deref(), Some("factory-12"));
+    assert_eq!(request.agent_identity_uid.as_deref(), Some("foreman-12"));
+    assert_eq!(
+        request
+            .config
+            .as_ref()
+            .and_then(|config| config.environment_id.as_deref()),
+        Some(factory_environment.to_string().as_str())
+    );
+    assert_eq!(
+        request
+            .config
+            .as_ref()
+            .and_then(|config| config.model_id.as_deref()),
+        None
+    );
+
+    pending.set_valid_environment_ids(HashSet::from([ordinary_environment]));
+    pending.set_choice(CloudSelectorChoice::Environment(ordinary_environment), true);
+    assert_eq!(pending.config.model_id.as_deref(), Some("auto"));
+    assert_eq!(pending.config.computer_use_enabled, Some(true));
+    assert!(pending.validate().is_ok());
+}
+
+#[test]
+fn revoked_factory_handoff_rejects_before_fork_or_spawn() {
+    let _oz_handoff = FeatureFlag::OzHandoff.override_enabled(true);
+    let _local_cloud = FeatureFlag::HandoffLocalCloud.override_enabled(true);
+    let _factory_selector = FeatureFlag::CloudModeFactorySelector.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let mut mock = MockAIClient::new();
+        mock.expect_fork_conversation().times(0);
+        mock.expect_spawn_agent().times(0);
+        let client: Arc<dyn AIClient> = Arc::new(mock);
+        let mut pending = pending(
+            client.clone(),
+            Some("source-token".to_owned()),
+            false,
+            "continue",
+        );
+        let choice = CloudSelectorChoice::Factory {
+            uid: "factory-12".to_owned(),
+            environment_uid: SyncId::ServerId(ServerId::from(12)),
+            foreman_agent_uid: "foreman-12".to_owned(),
+        };
+        pending.set_valid_factory_choices(vec![choice.clone()]);
+        pending.set_choice(choice.clone(), true);
+        assert!(pending.validate().is_ok());
+
+        let future = app.update(|ctx| execute_handoff(pending, client, None, None, ctx));
+        let HandoffCommitOutcome::Rejected { mut pending, error } = future.await else {
+            panic!("revoked Factory must reject before external work");
+        };
+        assert_eq!(error, HandoffPrepareError::InvalidFactory);
+        assert_eq!(
+            pending.take_restoration().expect("prompt retained").prompt,
+            "continue"
+        );
+    });
+}
 fn exchange_with_working_directory(
     working_directory: &str,
     output_status: AIAgentOutputStatus,
@@ -262,15 +365,23 @@ fn pending(
             prompt: prompt.to_owned(),
             attachments: Vec::new(),
             environment_id: None,
+            selected_choice: None,
         }),
         selected_environment_id: None,
+        selected_choice: None,
         environment_required: false,
         environment_selection_is_explicit: false,
         valid_environment_ids: HashSet::new(),
+        valid_factory_choices: Vec::new(),
         selected_model_id: "auto".to_owned(),
         model_selection_is_explicit: false,
         model_is_cloud_runnable: true,
         config: AgentConfigSnapshot {
+            model_id: Some("auto".to_owned()),
+            computer_use_enabled: Some(true),
+            ..Default::default()
+        },
+        ordinary_config: AgentConfigSnapshot {
             model_id: Some("auto".to_owned()),
             computer_use_enabled: Some(true),
             ..Default::default()
@@ -295,6 +406,7 @@ fn request_for_prompt(
             prompt: prompt.to_owned(),
             source_conversation_active: source_active,
             config: AgentConfigSnapshot::default(),
+            selected_choice: None,
             title: None,
             attachments: Vec::new(),
             snapshot_disabled: false,

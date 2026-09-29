@@ -77,6 +77,7 @@ fn create_test_task(
         executor: None,
         conversation_id: None,
         request_usage: None,
+        factory: None,
         agent_config_snapshot: None,
         artifacts: vec![],
         is_sandbox_running: false,

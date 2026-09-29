@@ -1095,7 +1095,15 @@ impl AgentInputFooter {
 
         right = right.with_child(ChildView::new(&self.file_button).finish());
 
-        if let Some(model_selector) = self.v2_model_selector.as_ref() {
+        let factory_selected = self
+            .ambient_agent_view_model
+            .as_ref()
+            .is_some_and(|model| model.as_ref(app).is_factory_selected());
+        if let Some(model_selector) = self
+            .v2_model_selector
+            .as_ref()
+            .filter(|_| !factory_selected)
+        {
             // Only show the model selector when the active harness has available models.
             // Some harnesses (e.g. Gemini) may not have any server-provided model options.
             let show_selector = self

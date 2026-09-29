@@ -557,6 +557,7 @@ fn make_ambient_task_with_event_seq(
         executor: None,
         conversation_id: None,
         request_usage: None,
+        factory: None,
         agent_config_snapshot: None,
         artifacts: vec![],
         is_sandbox_running: false,
