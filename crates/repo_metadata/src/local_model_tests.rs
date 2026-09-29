@@ -103,7 +103,7 @@ fn create_hard_links(directory: &std::path::Path, count: usize, sources: &[PathB
     }
 }
 
-#[cfg(feature = "local_fs")]
+#[cfg(all(feature = "local_fs", target_os = "linux"))]
 fn file_count(entry: &FileTreeEntry, path: &StandardizedPath) -> usize {
     match entry.get(path) {
         Some(FileTreeEntryState::File(_)) => 1,
