@@ -87,6 +87,9 @@ async fn await_watcher_updates_for_repo(
 }
 
 #[cfg(feature = "local_fs")]
+const HARD_LINK_TEMPLATE_COUNT: usize = 256;
+
+#[cfg(feature = "local_fs")]
 fn create_hard_links(directory: &std::path::Path, count: usize, sources: &[PathBuf]) {
     std::fs::create_dir_all(directory).unwrap();
     for index in 0..count {
@@ -214,17 +217,18 @@ fn watcher_added_directories_share_one_eager_file_budget() {
         let second_eager = second.join("eager");
         let first_lazy = first_eager.join("lazy");
         let second_lazy = second_eager.join("lazy");
-        let templates = (0..4)
+        let templates = (0..HARD_LINK_TEMPLATE_COUNT)
             .map(|index| {
                 let path = repo.join(format!("template-{index}.txt"));
                 std::fs::write(&path, "template").unwrap();
                 path
             })
             .collect::<Vec<_>>();
-        create_hard_links(&first_eager, MAX_FILES_PER_REPO / 2, &templates[..2]);
-        create_hard_links(&second_eager, MAX_FILES_PER_REPO / 2, &templates[2..]);
+        let (first_templates, second_templates) = templates.split_at(HARD_LINK_TEMPLATE_COUNT / 2);
+        create_hard_links(&first_eager, MAX_FILES_PER_REPO / 2, first_templates);
+        create_hard_links(&second_eager, MAX_FILES_PER_REPO / 2, second_templates);
         create_hard_links(&first_lazy, 1, &templates[..1]);
-        create_hard_links(&second_lazy, 1, &templates[2..3]);
+        create_hard_links(&second_lazy, 1, &templates[HARD_LINK_TEMPLATE_COUNT / 2..]);
 
         let repo = StandardizedPath::from_local_canonicalized(&repo).unwrap();
         let first_lazy = StandardizedPath::from_local_canonicalized(&first_lazy).unwrap();
