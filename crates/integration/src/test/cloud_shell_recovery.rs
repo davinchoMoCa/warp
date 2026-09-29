@@ -33,6 +33,7 @@ pub fn test_cloud_agent_shell_respawn() -> Builder {
         .with_step(wait_for_agent_command_result(1, "setup_action", ""))
         .with_step(sync_session_environment_variable(
             1,
+            "setup_action",
             "RECOVERY_VALUE",
             "preserved",
         ))

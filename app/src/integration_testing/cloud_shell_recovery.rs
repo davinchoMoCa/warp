@@ -129,19 +129,24 @@ pub fn wait_for_agent_command_result(
 
 pub fn sync_session_environment_variable(
     tab_index: usize,
+    result_key: &'static str,
     key: &'static str,
     value: &'static str,
 ) -> TestStep {
-    TestStep::new("Sync session environment variable").with_action(move |app, window_id, _| {
+    TestStep::new("Sync session environment variable").with_action(move |app, window_id, data| {
+        let (_, action_id) = data
+            .get::<_, (AIConversationId, AIAgentActionId)>(result_key)
+            .expect("agent command was queued");
         let (session_id, sessions, mut env_vars) =
             single_terminal_view_for_tab(app, window_id, tab_index).read(app, |terminal, ctx| {
-                let session_id = terminal
-                    .model
-                    .lock()
-                    .block_list()
-                    .active_block()
-                    .session_id()
-                    .expect("terminal session is bootstrapped");
+                let session_id = {
+                    let model = terminal.model.lock();
+                    model
+                        .block_list()
+                        .block_for_ai_action_id(action_id)
+                        .and_then(|block| block.session_id())
+                        .expect("agent command block has a session")
+                };
                 (
                     session_id,
                     terminal.sessions_model().clone(),
@@ -200,6 +205,7 @@ pub fn wait_for_recovery(tab_index: usize) -> TestStep {
                             matches!(result, Some((1, _)))
                                 && model.shared_session_status().is_active_sharer()
                                 && model.is_shared_ambient_agent_session()
+                                && model.block_list().is_bootstrapping_precmd_done()
                         )
                     },
                 )
