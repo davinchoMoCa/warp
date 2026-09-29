@@ -12,7 +12,6 @@ use std::time::Duration;
 use ai::api_keys::ApiKeyManager;
 use anyhow::Context as _;
 use async_broadcast::InactiveReceiver;
-use command::blocking::Command;
 #[cfg(unix)]
 use nix::sys::termios::LocalFlags;
 use parking_lot::{FairMutex, Mutex};
@@ -20,9 +19,6 @@ use pathfinder_geometry::vector::Vector2F;
 use settings::Setting as _;
 use warp_core::SessionId;
 use warp_errors::report_error;
-use warp_terminal::local_tty::docker_sandbox::{
-    DOCKER_SANDBOX_HOME_DIR, DockerSandboxShellStarter,
-};
 use warpui::r#async::Timer;
 use warpui::r#async::executor::Background;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity, ViewHandle};
@@ -73,7 +69,7 @@ use crate::terminal::writeable_pty::terminal_manager_util::{
 };
 use crate::terminal::writeable_pty::{self, Message, PtyIntentEvent, TerminalSurface};
 use crate::terminal::{
-    PTY_READS_BROADCAST_CHANNEL_SIZE, ShellLaunchData, ShellLaunchState, SizeInfo,
+    PTY_READS_BROADCAST_CHANNEL_SIZE, ShellLaunchState, SizeInfo,
     TerminalManager as TerminalManagerTrait, TerminalModel, terminal_manager,
 };
 
@@ -93,31 +89,6 @@ enum EventLoopSenderState {
         pending: Vec<Message>,
     },
     Disconnected,
-}
-
-fn validated_recovery_working_directory(
-    starter: &DockerSandboxShellStarter,
-    requested: Option<&str>,
-) -> (String, bool) {
-    let Some(requested) = requested.filter(|path| !path.is_empty()) else {
-        return (DOCKER_SANDBOX_HOME_DIR.to_owned(), true);
-    };
-    let is_directory = Command::new(starter.logical_shell_path())
-        .args([
-            OsString::from("exec"),
-            OsString::from(starter.sandbox_name()),
-            OsString::from("test"),
-            OsString::from("-d"),
-            OsString::from("--"),
-            OsString::from(requested),
-        ])
-        .status()
-        .is_ok_and(|status| status.success());
-    if is_directory {
-        (requested.to_owned(), false)
-    } else {
-        (DOCKER_SANDBOX_HOME_DIR.to_owned(), true)
-    }
 }
 
 impl ReplaceableEventLoopSender {
@@ -346,7 +317,7 @@ struct ShellStartupResources {
 
 #[derive(Clone)]
 struct ShellRecoveryResources {
-    starter: DockerSandboxShellStarter,
+    starter: ShellStarter,
     original_env: HashMap<OsString, OsString>,
     channel_event_proxy: ChannelEventListener,
     #[cfg(unix)]
@@ -796,11 +767,25 @@ impl<S> TerminalManager<S> {
             return true;
         }
 
+        let session = request
+            .session_id
+            .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id));
         let (restored_working_directory, used_fallback_directory) =
-            validated_recovery_working_directory(
-                &resources.starter,
+            match resources.starter.recovery_working_directory(
                 request.requested_working_directory.as_deref(),
-            );
+                session.as_ref().and_then(|session| session.home_dir()),
+            ) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    self.fail_pending_shell_recovery(
+                        request,
+                        CloudAgentShellRecoveryFailureClass::PtySpawn,
+                        error,
+                        ctx,
+                    );
+                    return true;
+                }
+            };
         let dynamic_env = request.session_id.and_then(|session_id| {
             self.sessions
                 .as_ref(ctx)
@@ -813,23 +798,30 @@ impl<S> TerminalManager<S> {
         let model = self.model();
 
         model.lock().register_session_id(replacement_session_id);
-        let shell_launch_data = ShellLaunchData::Executable {
-            executable_path: replacement_starter.logical_shell_path().to_owned(),
-            shell_type: replacement_starter.shell_type(),
-        };
+        let shell_launch_data = replacement_starter.launch_data();
         model
             .lock()
             .set_pending_shell_launch_data(shell_launch_data.clone());
 
-        let pty = match Self::create_pty(
-            Some(PathBuf::from(&restored_working_directory)),
-            ShellStarter::DockerSandbox(replacement_starter),
-            restored_env,
-            model.clone(),
-            #[cfg(windows)]
-            replacement_event_loop_tx.clone(),
-            ctx,
-        ) {
+        self.event_loop_tx
+            .set_bootstrap_sender(replacement_event_loop_tx.clone());
+        let pty = match self
+            .enqueue_init_script(&replacement_starter, replacement_session_id)
+            .context("failed to initialize replacement shell")
+            .and_then(|_| {
+                let startup_directory = shell_launch_data
+                    .maybe_convert_absolute_path(&restored_working_directory)
+                    .context("failed to convert shell recovery directory")?;
+                Self::create_pty(
+                    Some(startup_directory),
+                    replacement_starter,
+                    restored_env,
+                    model.clone(),
+                    #[cfg(windows)]
+                    replacement_event_loop_tx,
+                    ctx,
+                )
+            }) {
             Ok(pty) => pty,
             Err(error) => {
                 self.fail_pending_shell_recovery(
@@ -856,8 +848,6 @@ impl<S> TerminalManager<S> {
             model.clone(),
             resources.channel_event_proxy,
         ));
-        self.event_loop_tx
-            .set_bootstrap_sender(replacement_event_loop_tx);
         self.pending_shell_recovery = Some(PendingShellRecovery {
             request,
             restored_working_directory,
@@ -1015,23 +1005,7 @@ fn on_shell_determined<S: TerminalSurface>(
         .lock()
         .set_login_shell_spawned(shell_starter.shell_type());
 
-    let shell_launch_data = match &shell_starter {
-        ShellStarter::Direct(shell_starter) => ShellLaunchData::Executable {
-            executable_path: shell_starter.logical_shell_path().to_owned(),
-            shell_type: shell_starter.shell_type(),
-        },
-        ShellStarter::DockerSandbox(docker_starter) => ShellLaunchData::Executable {
-            executable_path: docker_starter.logical_shell_path().to_owned(),
-            shell_type: docker_starter.shell_type(),
-        },
-        ShellStarter::Wsl(shell_starter) => ShellLaunchData::WSL {
-            distro: shell_starter.distribution().to_owned(),
-        },
-        ShellStarter::MSYS2(shell_starter) => ShellLaunchData::MSYS2 {
-            executable_path: shell_starter.logical_shell_path().to_owned(),
-            shell_type: shell_starter.shell_type(),
-        },
-    };
+    let shell_launch_data = shell_starter.launch_data();
 
     // This needs to be done before bootstrapping starts (i.e. before spawning the event loop below).
     manager
@@ -1042,11 +1016,7 @@ fn on_shell_determined<S: TerminalSurface>(
     // Register the session ID that was generated during shell starter construction.
     // For bash, fish, and PowerShell, the session ID is already baked into the command
     // args. For zsh and MSYS2, enqueue_init_script injects this same ID.
-    let generated_session_id = match &shell_starter {
-        ShellStarter::Direct(starter) | ShellStarter::MSYS2(starter) => starter.session_id(),
-        ShellStarter::DockerSandbox(starter) => starter.session_id(),
-        ShellStarter::Wsl(starter) => starter.session_id(),
-    };
+    let generated_session_id = shell_starter.session_id();
     manager
         .model()
         .lock()
@@ -1060,15 +1030,13 @@ fn on_shell_determined<S: TerminalSurface>(
         #[cfg(unix)]
         model_events,
     } = shell_startup_resources;
-    if let ShellStarter::DockerSandbox(starter) = &shell_starter {
-        manager.recovery_resources = Some(ShellRecoveryResources {
-            starter: starter.clone(),
-            original_env: env_vars.clone(),
-            channel_event_proxy: channel_event_proxy.clone(),
-            #[cfg(unix)]
-            model_events: model_events.clone(),
-        });
-    }
+    manager.recovery_resources = Some(ShellRecoveryResources {
+        starter: shell_starter.clone(),
+        original_env: env_vars.clone(),
+        channel_event_proxy: channel_event_proxy.clone(),
+        #[cfg(unix)]
+        model_events: model_events.clone(),
+    });
     let model = manager.model();
     #[cfg(windows)]
     let event_loop_tx = manager
@@ -1180,9 +1148,9 @@ impl<S> TerminalManager<S> {
                 session_id,
             );
             self.event_loop_tx
-                .send(Message::Input(init_shell_script.into_bytes().into()))?;
+                .send_bootstrap(Message::Input(init_shell_script.into_bytes().into()))?;
             self.event_loop_tx
-                .send(Message::Input(shell_type.execute_command_bytes().into()))
+                .send_bootstrap(Message::Input(shell_type.execute_command_bytes().into()))
         } else {
             Ok(())
         }
