@@ -133,6 +133,7 @@ impl FactorySelectorCatalog {
         (self.initialized && self.team_uid == scope.team_uid()).then_some(&self.state)
     }
 
+    #[cfg(feature = "local_fs")]
     pub fn state_for_team_uid(&self, team_uid: Option<ServerId>) -> Option<&FactorySelectorState> {
         (self.initialized && self.team_uid == team_uid).then_some(&self.state)
     }
