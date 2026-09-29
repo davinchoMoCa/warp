@@ -275,7 +275,7 @@ fn watcher_added_directory_enforces_file_budget_and_preserves_force_included_fil
         let oversized = repo.join("oversized");
         let skill = oversized.join(".agents/skills/example/SKILL.md");
         std::fs::write(&skill, "name: example").unwrap();
-        let templates = (0..4)
+        let templates = (0..HARD_LINK_TEMPLATE_COUNT)
             .map(|index| {
                 let path = repo.join(format!("template-{index}.txt"));
                 std::fs::write(&path, "template").unwrap();
