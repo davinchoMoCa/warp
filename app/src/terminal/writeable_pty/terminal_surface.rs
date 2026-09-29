@@ -64,6 +64,7 @@ where
         false
     }
 
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn on_cloud_shell_recovered(
         &mut self,
         _request: CloudShellRecoveryRequest,
@@ -73,6 +74,7 @@ where
     ) {
     }
 
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn on_cloud_shell_recovery_failed(
         &mut self,
         _request: CloudShellRecoveryRequest,

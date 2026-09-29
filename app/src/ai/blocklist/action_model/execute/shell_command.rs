@@ -60,6 +60,7 @@ pub struct ShellCommandExecutor {
 enum ShellRecoveryState {
     Recovering(Option<async_channel::Sender<BlockWaitEvent>>),
     /// Keep the entry after delivery: an unknown exit status leaves the old block unfinished.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     Completed(Option<ShellRecoveryResult>),
 }
 
@@ -660,6 +661,7 @@ impl ShellCommandExecutor {
             .insert(block_id.clone(), ShellRecoveryState::Recovering(waiter));
     }
 
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn finish_shell_recovery(&mut self, result: ShellRecoveryResult) {
         let Some(state) = self.shell_recoveries.get_mut(&result.block_id) else {
             return;
@@ -1185,6 +1187,7 @@ pub struct ShellRecoveryResult {
 enum BlockWaitEvent {
     Finished,
     RecoveryStarted,
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     Recovered(ShellRecoveryResult),
 }
 
