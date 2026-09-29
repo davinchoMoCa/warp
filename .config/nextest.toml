@@ -3,16 +3,6 @@
 # if it takes 2x as long as the slow timeout (i.e.: 60s total).
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-[test-groups]
-repo-metadata-large-file-fixtures = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'package(repo_metadata) & test(watcher_added_director)'
-platform = { host = 'cfg(any(target_os = "macos", target_os = "windows"))' }
-# These tests each create more than 200,000 directory entries and contend heavily when run together.
-test-group = 'repo-metadata-large-file-fixtures'
-slow-timeout = { period = "60s", terminate-after = 2 }
-
 [[profile.default.overrides]]
 filter = 'package(integration)'
 # Integration tests are heavier-weight than unit tests, so have each one
