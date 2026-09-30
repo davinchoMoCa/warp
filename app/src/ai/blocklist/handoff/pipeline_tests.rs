@@ -23,7 +23,7 @@ use crate::features::FeatureFlag;
 use crate::server::ids::{ServerId, SyncId};
 use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::ai::{ForkConversationResponse, MockAIClient, SpawnAgentResponse};
-use crate::server::server_api::factory::MockFactoryClient;
+use crate::server::server_api::factory::{MockFactoryClient, UpsertedRunner};
 use crate::test_util::add_window_with_terminal;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 use crate::workspaces::user_workspaces::TeamContextForOperation;
@@ -38,6 +38,36 @@ fn factory_client() -> Arc<dyn FactoryClient> {
     let mut client = MockFactoryClient::new();
     client.expect_has_factory_access().returning(|| Ok(false));
     Arc::new(client)
+}
+
+struct PendingFactoryClient(Arc<AtomicBool>);
+
+#[async_trait::async_trait]
+impl FactoryClient for PendingFactoryClient {
+    async fn has_factory_access(&self) -> anyhow::Result<bool> {
+        self.0.store(true, Ordering::SeqCst);
+        futures::future::pending().await
+    }
+
+    async fn get_runners(
+        &self,
+        _: Option<warp_graphql::queries::get_runners::RunnerSortBy>,
+        _: Option<RequestTeamScope>,
+    ) -> anyhow::Result<Vec<warp_graphql::queries::get_runners::Runner>> {
+        unreachable!()
+    }
+
+    async fn upsert_runner(
+        &self,
+        _: warp_graphql::mutations::upsert_runner::UpsertRunnerInput,
+        _: Option<RequestTeamScope>,
+    ) -> anyhow::Result<UpsertedRunner> {
+        unreachable!()
+    }
+
+    async fn delete_runner(&self, _: String) -> anyhow::Result<String> {
+        unreachable!()
+    }
 }
 
 fn exchange_with_working_directory(
@@ -983,6 +1013,48 @@ async fn cancellation_during_spawn_cancels_the_created_task() {
     .await;
 
     assert!(matches!(outcome, HandoffCommitOutcome::Cancelled));
+}
+
+#[tokio::test]
+async fn cancellation_during_factory_probe_cancels_the_created_task() {
+    let entered_probe = Arc::new(AtomicBool::new(false));
+    let spawned = Arc::new(AtomicBool::new(false));
+    let mut mock = MockAIClient::new();
+    mock.expect_spawn_agent().times(1).returning({
+        let spawned = spawned.clone();
+        move |_, _| {
+            spawned.store(true, Ordering::SeqCst);
+            Ok(SpawnAgentResponse {
+                task_id: task_id(),
+                run_id: "pending-probe".to_owned(),
+                at_capacity: false,
+            })
+        }
+    });
+    mock.expect_cancel_ambient_agent_task()
+        .times(1)
+        .withf(|id| *id == task_id())
+        .returning(|_| Ok(()));
+    let client: Arc<dyn AIClient> = Arc::new(mock);
+    let (cancel, receiver) = oneshot::channel();
+    let future = execute_validated_handoff(
+        pending(client.clone(), None, false, "new task"),
+        client,
+        Arc::new(PendingFactoryClient(entered_probe.clone())),
+        Some(receiver),
+        None,
+    );
+    tokio::pin!(future);
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut future)
+            .await
+            .is_err()
+    );
+    assert!(spawned.load(Ordering::SeqCst));
+    assert!(entered_probe.load(Ordering::SeqCst));
+    cancel.send(()).expect("cancellation receiver is live");
+    assert!(matches!(future.await, HandoffCommitOutcome::Cancelled));
 }
 
 #[tokio::test]

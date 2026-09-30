@@ -161,6 +161,14 @@ pub(crate) struct MaterializedLocalOzChildSession {
     pub(crate) conversation_name: String,
 }
 
+struct PendingRemoteChildRunLink {
+    conversation_id: AIConversationId,
+    session_id: TuiSessionId,
+    task_id: AmbientAgentTaskId,
+    run_id: String,
+    cloud_run_state: ModelHandle<TuiCloudRunState>,
+}
+
 impl Entity for TuiOrchestrationModel {
     type Event = TuiOrchestrationEvent;
 }
@@ -447,6 +455,29 @@ impl TuiOrchestrationModel {
         }
     }
 
+    fn apply_remote_child_run_url(
+        &mut self,
+        link: &PendingRemoteChildRunLink,
+        factory_access: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self
+            .child_session_by_conversation
+            .get(&link.conversation_id)
+            != Some(&link.session_id)
+            || TuiSessions::as_ref(ctx).session(link.session_id).is_none()
+            || BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&link.conversation_id)
+                .and_then(|conversation| conversation.task_id())
+                != Some(link.task_id)
+        {
+            return;
+        }
+        link.cloud_run_state.update(ctx, |state, ctx| {
+            state.set_run_url(cloud_run_url(&link.run_id, factory_access), ctx);
+        });
+    }
+
     /// Focuses the retained session for a conversation and resumes automatic
     /// reveal on the level the bar will anchor to for that conversation.
     pub(crate) fn focus_conversation_session(
@@ -627,22 +658,35 @@ impl TuiOrchestrationModel {
         let factory_client = ServerApiProvider::as_ref(ctx).get_factory_client();
         let cloud_run_state_for_launch = cloud_run_state.clone();
         ctx.spawn(
-            async move {
-                futures::join!(
-                    ai_client.spawn_agent(spawn_request, team_scope),
-                    has_factory_access(factory_client.as_ref())
-                )
-            },
-            move |me, (result, factory_access), ctx| {
+            async move { ai_client.spawn_agent(spawn_request, team_scope).await },
+            move |me, result, ctx| {
+                let run_identity = result
+                    .as_ref()
+                    .ok()
+                    .map(|response| (response.task_id, response.run_id.clone()));
                 let result = result.map_err(|error| classify_cloud_agent_startup_error(&error));
                 me.finish_remote_child_launch(
                     conversation_id,
                     surface_id,
                     cloud_run_state_for_launch,
                     result,
-                    factory_access,
                     ctx,
                 );
+                if let Some((task_id, run_id)) = run_identity {
+                    let link = PendingRemoteChildRunLink {
+                        conversation_id,
+                        session_id,
+                        task_id,
+                        run_id,
+                        cloud_run_state: cloud_run_state.clone(),
+                    };
+                    ctx.spawn(
+                        async move { has_factory_access(factory_client.as_ref()).await },
+                        move |me, factory_access, ctx| {
+                            me.apply_remote_child_run_url(&link, factory_access, ctx);
+                        },
+                    );
+                }
             },
         );
         ctx.notify();
@@ -684,14 +728,12 @@ impl TuiOrchestrationModel {
         child_surface_id: EntityId,
         cloud_run_state: ModelHandle<TuiCloudRunState>,
         result: Result<warp::tui_export::SpawnAgentResponse, CloudAgentStartupIssue>,
-        factory_access: bool,
         ctx: &mut ModelContext<Self>,
     ) {
         match result {
             Ok(response) => {
-                let run_url = cloud_run_url(&response.run_id, factory_access);
                 cloud_run_state.update(ctx, |state, ctx| {
-                    state.set_spawned(response.task_id, response.run_id.clone(), run_url, ctx);
+                    state.set_spawned(response.task_id, response.run_id.clone(), None, ctx);
                 });
                 BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
                     history.assign_run_id_for_conversation(

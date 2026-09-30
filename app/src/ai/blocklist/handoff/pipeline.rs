@@ -819,13 +819,7 @@ async fn execute_validated_handoff(
         .is_some_and(handoff_cancellation_requested)
     {
         if let Ok(response) = &response {
-            let task_id = response.task_id;
-            if let Err(error) = ai_client.cancel_ambient_agent_task(&task_id).await {
-                report_error!(
-                    error.context("Failed to cancel ambient agent task"),
-                    extra: { "task_id" => %task_id }
-                );
-            }
+            cancel_handoff_task(&ai_client, response.task_id).await;
         }
         return HandoffCommitOutcome::Cancelled;
     }
@@ -842,18 +836,44 @@ async fn execute_validated_handoff(
         }
     };
 
+    let factory_access = if let Some(receiver) = cancellation {
+        let probe = Box::pin(has_factory_access(factory_client.as_ref()));
+        match select(probe, Box::pin(receiver)).await {
+            Either::Left((allowed, mut receiver)) => {
+                if handoff_cancellation_requested(&mut receiver) {
+                    cancel_handoff_task(&ai_client, response.task_id).await;
+                    return HandoffCommitOutcome::Cancelled;
+                }
+                allowed
+            }
+            Either::Right((Ok(()), _)) => {
+                cancel_handoff_task(&ai_client, response.task_id).await;
+                return HandoffCommitOutcome::Cancelled;
+            }
+            Either::Right((Err(_), probe)) => probe.await,
+        }
+    } else {
+        has_factory_access(factory_client.as_ref()).await
+    };
+
     HandoffCommitOutcome::Created(HandoffCreated {
         task_id: response.task_id,
         run_id: response.run_id.clone(),
-        url: cloud_run_url(
-            &response.run_id,
-            has_factory_access(factory_client.as_ref()).await,
-        ),
+        url: cloud_run_url(&response.run_id, factory_access),
         at_capacity: response.at_capacity,
         request,
         derived_workspace_had_content: settled.derived_workspace_had_content,
         snapshot_failed: settled.snapshot_failed,
     })
+}
+
+async fn cancel_handoff_task(ai_client: &Arc<dyn AIClient>, task_id: AmbientAgentTaskId) {
+    if let Err(error) = ai_client.cancel_ambient_agent_task(&task_id).await {
+        report_error!(
+            error.context("Failed to cancel ambient agent task"),
+            extra: { "task_id" => %task_id }
+        );
+    }
 }
 
 fn handoff_cancellation_requested(cancellation: &mut oneshot::Receiver<()>) -> bool {
