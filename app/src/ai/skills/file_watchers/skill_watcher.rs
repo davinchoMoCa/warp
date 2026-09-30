@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ai::skills::{
-    ParsedSkill, SKILL_PROVIDER_DEFINITIONS, SkillProvider, SkillScope, get_provider_for_path,
-    home_skills_path, parse_skill, parse_skill_content_at_location,
+    LOCAL_SKILL_MAX_BATCH_BYTES, LOCAL_SKILL_MAX_FILE_BYTES, ParsedSkill,
+    SKILL_PROVIDER_DEFINITIONS, SkillProvider, SkillScope, get_provider_for_path, home_skills_path,
+    parse_skill, parse_skill_content_at_location, read_bounded_local_skill_content,
 };
 use async_channel::Sender;
 use futures::future::BoxFuture;
@@ -14,6 +15,7 @@ use repo_metadata::{
     DirectoryWatcher, RepoMetadataModel, RepositoryIdentifier, RepositoryUpdate,
     RepositoryWatchMode,
 };
+use warp_core::safe_warn;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 use watcher::{BulkFilesystemWatcherEvent, HomeDirectoryWatcher, HomeDirectoryWatcherEvent};
@@ -40,8 +42,7 @@ pub enum SkillWatcherEvent {
     SkillsDeleted { paths: Vec<LocalOrRemotePath> },
 }
 
-type ProjectSkillContentsFuture =
-    BoxFuture<'static, anyhow::Result<Vec<(LocalOrRemotePath, String)>>>;
+type ProjectSkillsFuture = BoxFuture<'static, anyhow::Result<Vec<ParsedSkill>>>;
 pub struct SkillWatcher {
     // Channel for sending repository messages from subscribers.
     repository_message_tx: Sender<SkillRepositoryMessage>,
@@ -365,19 +366,16 @@ impl SkillWatcher {
         if skill_paths.is_empty() {
             return;
         }
-        let Some(read_skill_contents) = read_project_skill_contents(skill_paths, ctx) else {
+        let Some(parse_skills) = read_and_parse_project_skills(skill_paths, ctx) else {
             return;
         };
 
-        ctx.spawn(
-            async move { read_and_parse_project_skills(read_skill_contents).await },
-            move |me, skills, ctx| match skills {
-                Ok(skills) => {
-                    me.emit_project_skills_if_current(&repo_id, refresh_generation, skills, ctx);
-                }
-                Err(err) => log::warn!("Failed to read project skills: {err}"),
-            },
-        );
+        ctx.spawn(parse_skills, move |me, skills, ctx| match skills {
+            Ok(skills) => {
+                me.emit_project_skills_if_current(&repo_id, refresh_generation, skills, ctx);
+            }
+            Err(err) => log::warn!("Failed to read project skills: {err}"),
+        });
     }
 
     fn emit_project_skills_if_current(
@@ -410,17 +408,14 @@ impl SkillWatcher {
         if skill_paths.is_empty() {
             return;
         }
-        let Some(read_skill_contents) = read_project_skill_contents(skill_paths, ctx) else {
+        let Some(parse_skills) = read_and_parse_project_skills(skill_paths, ctx) else {
             return;
         };
 
-        ctx.spawn(
-            async move { read_and_parse_project_skills(read_skill_contents).await },
-            |me, skills, ctx| match skills {
-                Ok(skills) => me.emit_project_skills(skills, ctx),
-                Err(err) => log::warn!("Failed to read fallback project skills: {err}"),
-            },
-        );
+        ctx.spawn(parse_skills, |me, skills, ctx| match skills {
+            Ok(skills) => me.emit_project_skills(skills, ctx),
+            Err(err) => log::warn!("Failed to read fallback project skills: {err}"),
+        });
     }
 
     fn stop_failed_local_project_watcher(
@@ -1049,45 +1044,78 @@ impl SkillWatcher {
     }
 }
 
-fn read_project_skill_contents(
+fn read_and_parse_project_skills(
     skill_paths: Vec<LocalOrRemotePath>,
     ctx: &AppContext,
-) -> Option<ProjectSkillContentsFuture> {
+) -> Option<ProjectSkillsFuture> {
     match skill_paths.first()? {
         LocalOrRemotePath::Local(_) => Some(Box::pin(async move {
-            Ok(read_local_project_skill_contents(skill_paths))
+            Ok(parse_local_project_skills(skill_paths))
         })),
-        LocalOrRemotePath::Remote(_) => Some(read_remote_text_file_contents(
-            skill_paths,
-            Some(REMOTE_CONTEXT_MAX_FILE_BYTES),
-            Some(REMOTE_CONTEXT_MAX_BATCH_BYTES),
-            ctx,
-        )),
+        LocalOrRemotePath::Remote(_) => {
+            let read = read_remote_text_file_contents(
+                skill_paths,
+                Some(REMOTE_CONTEXT_MAX_FILE_BYTES),
+                Some(REMOTE_CONTEXT_MAX_BATCH_BYTES),
+                ctx,
+            );
+            Some(Box::pin(async move {
+                Ok(parse_project_skill_contents(read.await?))
+            }))
+        }
     }
-}
-
-async fn read_and_parse_project_skills(
-    read_skill_contents: ProjectSkillContentsFuture,
-) -> anyhow::Result<Vec<ParsedSkill>> {
-    Ok(parse_project_skill_contents(read_skill_contents.await?))
-}
-
-fn read_local_project_skill_contents(
-    skill_paths: Vec<LocalOrRemotePath>,
-) -> Vec<(LocalOrRemotePath, String)> {
-    skill_paths
-        .into_iter()
-        .filter_map(|path| {
-            let content = fs::read_to_string(path.to_local_path()?).ok()?;
-            Some((path, content))
-        })
-        .collect()
 }
 
 fn parse_listed_local_skill(path: &Path) -> anyhow::Result<ParsedSkill> {
     let mut skill = parse_skill(path)?;
     skill.drop_listing_body();
     Ok(skill)
+}
+
+fn parse_local_project_skills(skill_paths: Vec<LocalOrRemotePath>) -> Vec<ParsedSkill> {
+    let mut skills = Vec::new();
+    let mut accepted_bytes = 0u64;
+    for path in skill_paths {
+        let Some(local_path) = path.to_local_path() else {
+            continue;
+        };
+        let Ok(file_bytes) = fs::metadata(local_path).map(|metadata| metadata.len()) else {
+            continue;
+        };
+        if file_bytes > LOCAL_SKILL_MAX_FILE_BYTES {
+            safe_warn!(
+                safe: ("Skipping oversized local project skill"),
+                full: (
+                    "Skipping oversized local project skill {} ({file_bytes} bytes)",
+                    path.display_path()
+                )
+            );
+            continue;
+        }
+        if accepted_bytes.saturating_add(file_bytes) > LOCAL_SKILL_MAX_BATCH_BYTES {
+            safe_warn!(
+                safe: ("Stopped local project skill ingest after reaching the batch size limit"),
+                full: (
+                    "Stopped local project skill ingest after {accepted_bytes} accepted bytes at {}",
+                    path.display_path()
+                )
+            );
+            break;
+        }
+        let Ok(content) = read_bounded_local_skill_content(local_path) else {
+            continue;
+        };
+        let provider = get_provider_for_path(&path).unwrap_or(SkillProvider::Agents);
+        let Ok(mut skill) =
+            parse_skill_content_at_location(path, &content, provider, SkillScope::Project)
+        else {
+            continue;
+        };
+        accepted_bytes = accepted_bytes.saturating_add(content.len() as u64);
+        skill.drop_listing_body();
+        skills.push(skill);
+    }
+    skills
 }
 
 fn parse_project_skill_contents(

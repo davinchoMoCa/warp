@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
-use ai::skills::{ParsedSkill, SkillProvider, parse_skill};
+use ai::skills::{LOCAL_SKILL_MAX_FILE_BYTES, ParsedSkill, SkillProvider, parse_skill};
 use repo_metadata::entry::{DirectoryEntry, Entry, FileMetadata};
 use repo_metadata::file_tree_store::FileTreeState;
 use repo_metadata::repositories::DetectedRepositories;
@@ -18,7 +18,7 @@ use warp_util::standardized_path::StandardizedPath;
 use warpui::App;
 
 use super::super::subscribers::SkillRepositoryMessage;
-use super::{SkillWatcher, parse_project_skill_contents};
+use super::{SkillWatcher, parse_local_project_skills, parse_project_skill_contents};
 use crate::ai::skills::skill_manager::SkillWatcherEvent;
 
 /// Helper function for creating a single skill file
@@ -110,6 +110,109 @@ fn parse_project_skill_contents_classifies_foreign_encoded_provider_path() {
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].path, path);
     assert_eq!(skills[0].provider, SkillProvider::Codex);
+}
+
+fn write_sized_local_skill(
+    parent_dir: &std::path::Path,
+    name: &str,
+    total_bytes: usize,
+) -> LocalOrRemotePath {
+    let header = format!("---\nname: {name}\ndescription: {name}\n---\n");
+    assert!(total_bytes >= header.len());
+    let mut bytes = header.into_bytes();
+    bytes.resize(total_bytes, b'a');
+    let skill_dir = parent_dir.join(".agents").join("skills").join(name);
+    fs::create_dir_all(&skill_dir).unwrap();
+    let skill_file = skill_dir.join("SKILL.md");
+    fs::write(&skill_file, bytes).unwrap();
+    LocalOrRemotePath::Local(skill_file)
+}
+
+#[test]
+fn parse_local_project_skills_skips_oversized_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let first = write_sized_local_skill(temp_dir.path(), "first", 256);
+    let huge = write_sized_local_skill(
+        temp_dir.path(),
+        "huge",
+        LOCAL_SKILL_MAX_FILE_BYTES as usize + 1,
+    );
+    let third = write_sized_local_skill(temp_dir.path(), "third", 256);
+
+    let skills = parse_local_project_skills(vec![first.clone(), huge, third.clone()]);
+
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "third"]
+    );
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.path.clone())
+            .collect::<Vec<_>>(),
+        vec![first, third]
+    );
+    assert!(skills.iter().all(|skill| skill.content.is_empty()));
+}
+
+#[test]
+fn parse_local_project_skills_stops_at_aggregate_byte_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let max_file = LOCAL_SKILL_MAX_FILE_BYTES as usize;
+    let mut paths = Vec::new();
+    for index in 0..5 {
+        paths.push(write_sized_local_skill(
+            temp_dir.path(),
+            &format!("skill-{index}"),
+            max_file,
+        ));
+    }
+    let leftover = write_sized_local_skill(temp_dir.path(), "leftover", 64);
+    paths.push(leftover.clone());
+
+    let skills = parse_local_project_skills(paths);
+
+    assert_eq!(skills.len(), 5);
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["skill-0", "skill-1", "skill-2", "skill-3", "skill-4"]
+    );
+    assert!(skills.iter().all(|skill| skill.content.is_empty()));
+    assert!(skills.iter().all(|skill| skill.path != leftover));
+}
+
+#[test]
+fn parse_local_project_skills_parses_multiple_files_without_retaining_bodies() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = vec![
+        write_sized_local_skill(temp_dir.path(), "alpha", 128),
+        write_sized_local_skill(temp_dir.path(), "beta", 256),
+        write_sized_local_skill(temp_dir.path(), "gamma", 64),
+    ];
+
+    let skills = parse_local_project_skills(paths.clone());
+
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta", "gamma"]
+    );
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.path.clone())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert!(skills.iter().all(|skill| skill.content.is_empty()));
 }
 
 // ============================================================================

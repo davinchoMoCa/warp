@@ -306,3 +306,36 @@ fn test_truncation_cuts_at_sentence_boundary() {
 
     assert_eq!(result.description, "This is a sentence.");
 }
+
+#[test]
+fn test_parse_skill_rejects_oversized_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let skill_dir = temp_dir.path().join(".agents/skills/huge-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let skill_file = skill_dir.join("SKILL.md");
+    let mut bytes = b"---\nname: huge-skill\ndescription: huge\n---\n".to_vec();
+    bytes.resize(LOCAL_SKILL_MAX_FILE_BYTES as usize + 1, b'x');
+    std::fs::write(&skill_file, bytes).unwrap();
+
+    let err = parse_skill(&skill_file).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains(&LOCAL_SKILL_MAX_FILE_BYTES.to_string())
+    );
+}
+
+#[test]
+fn test_parse_skill_content_rejects_oversized_input() {
+    let content = "x".repeat(LOCAL_SKILL_MAX_FILE_BYTES as usize + 1);
+    let err = parse_skill_content_at_location(
+        LocalOrRemotePath::Local(PathBuf::from("SKILL.md")),
+        &content,
+        SkillProvider::Agents,
+        SkillScope::Project,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains(&LOCAL_SKILL_MAX_FILE_BYTES.to_string())
+    );
+}

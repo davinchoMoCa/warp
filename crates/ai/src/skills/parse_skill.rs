@@ -15,6 +15,11 @@ use super::skill_provider::{SkillProvider, SkillScope, get_provider_for_path, ge
 
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 512;
 
+/// Per-file cap for local skill listing, aligned with remote context file reads (1 MiB).
+pub const LOCAL_SKILL_MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// Aggregate cap for one local project skill ingest, aligned with remote context batches (5 MiB).
+pub const LOCAL_SKILL_MAX_BATCH_BYTES: u64 = 5 * 1024 * 1024;
+
 lazy_static! {
     static ref BLOCK_SEPARATOR: Regex =
         Regex::new(r"\n\s*\n").expect("Block separator regex should be valid");
@@ -31,6 +36,7 @@ pub fn parse_skill_content_at_location(
     provider: SkillProvider,
     scope: SkillScope,
 ) -> Result<ParsedSkill> {
+    reject_oversized_skill_content(content)?;
     let parsed = parse_markdown_content(content)?;
     let name = match parsed
         .front_matter
@@ -71,6 +77,8 @@ pub enum ParseSkillError {
     /// file to begin with if the path didn't have a valid parent directory.
     #[error("Could not derive skill name from path")]
     CouldNotDeriveSkillNameFromPath,
+    #[error("Skill file exceeds the maximum size of {max_bytes} bytes")]
+    FileTooLarge { max_bytes: u64 },
 }
 
 /// Represents a parsed skill with validated fields
@@ -165,13 +173,35 @@ fn parse_local_skill_internal(
     provider: SkillProvider,
     scope: SkillScope,
 ) -> Result<ParsedSkill> {
-    let content = fs::read_to_string(path)?;
+    let content = read_bounded_local_skill_content(path)?;
     parse_skill_content_at_location(
         LocalOrRemotePath::Local(path.to_path_buf()),
         &content,
         provider,
         scope,
     )
+}
+
+/// Reads a local skill file, rejecting it if it exceeds [`LOCAL_SKILL_MAX_FILE_BYTES`].
+pub fn read_bounded_local_skill_content(path: &Path) -> Result<String> {
+    let file_bytes = fs::metadata(path)?.len();
+    if file_bytes > LOCAL_SKILL_MAX_FILE_BYTES {
+        anyhow::bail!(ParseSkillError::FileTooLarge {
+            max_bytes: LOCAL_SKILL_MAX_FILE_BYTES,
+        });
+    }
+    let content = fs::read_to_string(path)?;
+    reject_oversized_skill_content(&content)?;
+    Ok(content)
+}
+
+fn reject_oversized_skill_content(content: &str) -> Result<()> {
+    if content.len() as u64 > LOCAL_SKILL_MAX_FILE_BYTES {
+        anyhow::bail!(ParseSkillError::FileTooLarge {
+            max_bytes: LOCAL_SKILL_MAX_FILE_BYTES,
+        });
+    }
+    Ok(())
 }
 
 fn derive_skill_name_from_path(path: &LocalOrRemotePath) -> Result<String> {
