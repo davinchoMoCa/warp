@@ -548,6 +548,25 @@ impl BlocklistAIHistoryModel {
         )
     }
 
+    /// Canonical parent resolution for a conversation id. Uses the loaded body
+    /// when present, otherwise the startup overlay, so the orchestration root
+    /// walk and breadcrumbs work before a child's task body is loaded.
+    pub fn resolved_parent_conversation_id(
+        &self,
+        conversation_id: &AIConversationId,
+    ) -> Option<AIConversationId> {
+        if let Some(conversation) = self.conversations_by_id.get(conversation_id) {
+            return self.resolved_parent_conversation_id_for_conversation(conversation);
+        }
+        self.orchestration_child_identities
+            .get(conversation_id)
+            .and_then(|identity| {
+                self.resolved_parent_conversation_id_from_persisted_data(
+                    &identity.conversation_data,
+                )
+            })
+    }
+
     fn index_child_conversation(
         &mut self,
         child_id: AIConversationId,

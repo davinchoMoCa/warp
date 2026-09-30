@@ -729,8 +729,7 @@ fn breadcrumb_ids(
     let root_id = orchestration_root_conversation_id(history, anchor_id)
         .filter(|root_id| *root_id != anchor_id);
     let parent_id = history
-        .conversation(&anchor_id)
-        .and_then(|anchor| history.resolved_parent_conversation_id_for_conversation(anchor))
+        .resolved_parent_conversation_id(&anchor_id)
         .filter(|parent_id| Some(*parent_id) != root_id && *parent_id != anchor_id);
     (root_id, parent_id)
 }

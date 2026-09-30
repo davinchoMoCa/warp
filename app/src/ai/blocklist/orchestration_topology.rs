@@ -98,21 +98,19 @@ pub fn resolve_orchestration_participant(
     }
 }
 
-/// Returns the topmost loaded conversation in an orchestration tree.
+/// Returns the topmost conversation in an orchestration tree.
 ///
-/// Conversations without descendants are not orchestration roots. Malformed
-/// parent cycles and missing ancestors fail closed.
+/// Walks loaded conversations and startup overlay identities so it works before
+/// a child's task body is loaded. Conversations without descendants are not
+/// orchestration roots. Malformed parent cycles and missing ancestors fail closed.
 pub fn orchestration_root_conversation_id(
     history: &BlocklistAIHistoryModel,
     conversation_id: AIConversationId,
 ) -> Option<AIConversationId> {
-    history.conversation(&conversation_id)?;
     let mut current = conversation_id;
     let mut visited = HashSet::new();
     while visited.insert(current) {
-        let conversation = history.conversation(&current)?;
-        let Some(parent) = history.resolved_parent_conversation_id_for_conversation(conversation)
-        else {
+        let Some(parent) = history.resolved_parent_conversation_id(&current) else {
             return (!history.child_conversation_ids_of(&current).is_empty()).then_some(current);
         };
         current = parent;
