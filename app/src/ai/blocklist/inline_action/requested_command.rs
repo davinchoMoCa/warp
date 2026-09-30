@@ -333,6 +333,7 @@ pub struct RequestedCommandView {
     // Header expansion state components
     is_header_expanded: bool,
     header_mouse_state: MouseStateHandle,
+    header_tooltip_mouse_state: MouseStateHandle,
     is_editing: bool,
 
     // A requested command can either be copied directly off of one citation (such as a Warp Drive
@@ -608,6 +609,7 @@ impl RequestedCommandView {
             autonomy_setting_speedbump,
             is_header_expanded: false,
             header_mouse_state: Default::default(),
+            header_tooltip_mouse_state: Default::default(),
             copied_from_citation: None,
             derived_from_citations: Default::default(),
             citation_state_handles: Default::default(),
@@ -1317,7 +1319,9 @@ impl RequestedCommandView {
             }
         };
 
+        let tooltip_text = header_tooltip_text(&self.action_type, self.command_text(), &title);
         let mut config = HeaderConfig::new(title, app)
+            .with_title_tooltip(tooltip_text, self.header_tooltip_mouse_state.clone())
             .with_selectable_text()
             .with_icon(if let Some(block) = requested_command_block {
                 if !block.finished() {
@@ -2195,6 +2199,17 @@ pub fn format_command_text(text: &str) -> String {
     }
 }
 
+fn header_tooltip_text(
+    action_type: &RequestedActionViewType,
+    command: &str,
+    title: &str,
+) -> String {
+    if action_type.is_requested_command() && title == format_command_text(command) {
+        command.to_owned()
+    } else {
+        title.to_owned()
+    }
+}
 #[cfg(test)]
 #[path = "requested_command_tests.rs"]
 mod tests;

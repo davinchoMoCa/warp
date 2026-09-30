@@ -170,6 +170,10 @@ pub struct FormattedTextElement {
 }
 
 impl FormattedTextElement {
+    /// Returns the underlying text without formatting markers.
+    pub fn raw_text(&self) -> String {
+        self.formatted_text.raw_text()
+    }
     #[cfg_attr(debug_assertions, track_caller)]
     fn internal_constructor(
         formatted_text: Arc<FormattedText>,

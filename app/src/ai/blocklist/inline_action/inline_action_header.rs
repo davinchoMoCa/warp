@@ -2,16 +2,19 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use pathfinder_color::ColorU;
+use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::{
-    Border, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
-    EventHandler, Expanded, Flex, FormattedTextElement, Hoverable, MainAxisAlignment, MainAxisSize,
-    MouseStateHandle, ParentElement, Radius, Shrinkable, SizeConstraintCondition,
-    SizeConstraintSwitch, Text,
+    Border, ChildAnchor, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    DispatchEventResult, EventHandler, Expanded, Flex, FormattedTextElement, Hoverable,
+    MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor,
+    ParentElement, ParentOffsetBounds, Radius, Shrinkable, SizeConstraintCondition,
+    SizeConstraintSwitch, Stack, Text,
 };
 use warpui::fonts::FamilyId;
 use warpui::platform::Cursor;
+use warpui::ui_components::components::UiComponent;
 use warpui::{AppContext, Element, EventContext, SingletonEntity};
 
 use crate::ai::blocklist::inline_action::inline_action_icons::icon_size;
@@ -76,6 +79,35 @@ impl ExpandedConfig {
     }
 }
 
+pub(crate) fn render_action_text_with_tooltip(
+    element: Box<dyn Element>,
+    tooltip_text: String,
+    mouse_state: MouseStateHandle,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let ui_builder = Appearance::as_ref(app).ui_builder().clone();
+    Hoverable::new(mouse_state, move |state| {
+        let mut stack = Stack::new().with_child(element);
+        if state.is_hovered() {
+            let tooltip = ConstrainedBox::new(ui_builder.tool_tip(tooltip_text).build().finish())
+                .with_max_width(500.)
+                .finish();
+            stack.add_positioned_overlay_child(
+                tooltip,
+                OffsetPositioning::offset_from_parent(
+                    vec2f(0., -4.),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopLeft,
+                    ChildAnchor::BottomLeft,
+                ),
+            );
+        }
+        stack.finish()
+    })
+    .with_propagate_drag()
+    .finish()
+}
+
 /// Configuration for when we want a right clickable element,
 /// but that element isn't necessarily expandable.
 #[derive(Clone)]
@@ -119,6 +151,7 @@ pub struct HeaderConfig {
     pub font_color_override: Option<ColorU>,
     pub corner_radius_override: Option<CornerRadius>,
     pub soft_wrap_title: bool,
+    pub title_tooltip: Option<(String, MouseStateHandle)>,
 }
 
 impl HeaderConfig {
@@ -134,11 +167,20 @@ impl HeaderConfig {
             font_color_override: None,
             corner_radius_override: None,
             soft_wrap_title: false,
+            title_tooltip: None,
         }
     }
 
     pub fn with_soft_wrap_title(mut self) -> Self {
         self.soft_wrap_title = true;
+        self
+    }
+    pub fn with_title_tooltip(
+        mut self,
+        text: impl Into<String>,
+        mouse_state: MouseStateHandle,
+    ) -> Self {
+        self.title_tooltip = Some((text.into(), mouse_state));
         self
     }
 
@@ -245,6 +287,14 @@ impl HeaderConfig {
             }
             title_element = element.finish();
         }
+
+        let title_element = if let Some((tooltip_text, mouse_state)) =
+            self.title_tooltip.filter(|(text, _)| !text.is_empty())
+        {
+            render_action_text_with_tooltip(title_element, tooltip_text, mouse_state, app)
+        } else {
+            title_element
+        };
 
         left_content_container.add_child(
             Expanded::new(

@@ -505,6 +505,7 @@ pub(super) struct AIBlockStateHandles {
     /// ReadSkill and ReadFiles action banners. Keyed by action id so that
     /// multiple skill banners in the same block don't share hover/click state.
     skill_button_handles: HashMap<AIAgentActionId, MouseStateHandle>,
+    action_text_tooltip_handles: HashMap<AIAgentActionId, MouseStateHandle>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -2036,6 +2037,10 @@ impl AIBlock {
         let new_action_ids: FxHashSet<AIAgentActionId> =
             output.actions().map(|action| action.id.clone()).collect();
         for action in output.actions() {
+            self.state_handles
+                .action_text_tooltip_handles
+                .entry(action.id.clone())
+                .or_default();
             let new_action_ids = new_action_ids.clone();
             #[cfg(feature = "integration_tests")]
             {

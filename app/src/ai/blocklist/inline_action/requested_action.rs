@@ -18,13 +18,14 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors::neutral_2;
 use warpui::elements::{
     Align, Border, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
-    FormattedTextElement, MainAxisAlignment, ParentElement, Radius, Shrinkable, Wrap, WrapFill,
+    FormattedTextElement, MainAxisAlignment, MouseStateHandle, ParentElement, Radius, Shrinkable,
+    Wrap, WrapFill,
 };
 use warpui::fonts::FamilyId;
 use warpui::keymap::Keystroke;
 use warpui::{AppContext, Element, SingletonEntity};
 
-use super::inline_action_header::HeaderConfig;
+use super::inline_action_header::{HeaderConfig, render_action_text_with_tooltip};
 use crate::ai::blocklist::block::view_impl::WithContentItemSpacing;
 use crate::ai::blocklist::inline_action::inline_action_header;
 use crate::ai::blocklist::inline_action::inline_action_header::{
@@ -66,6 +67,8 @@ impl From<FormattedTextElement> for FormattedTextOrElement {
 /// Configuration for rendering a requested action component using the builder pattern.
 pub struct RenderableAction {
     body: FormattedTextOrElement,
+    body_text: Option<String>,
+    body_tooltip_mouse_state: Option<MouseStateHandle>,
     action_button: Option<Box<dyn Element>>,
     pub icon: Option<Box<dyn Element>>,
     pub header: Option<HeaderConfig>,
@@ -83,6 +86,8 @@ impl RenderableAction {
             render_requested_action_body_text(text.into(), appearance.ui_font_family(), app);
         Self {
             body: FormattedTextOrElement::FormattedText(Box::new(formatted_text)),
+            body_text: Some(text.to_owned()),
+            body_tooltip_mouse_state: None,
             icon: None,
             header: None,
             footer: None,
@@ -98,6 +103,8 @@ impl RenderableAction {
         let theme = appearance.theme();
         Self {
             body: FormattedTextOrElement::FormattedText(Box::new(formatted_text)),
+            body_text: None,
+            body_tooltip_mouse_state: None,
             icon: None,
             header: None,
             footer: None,
@@ -113,6 +120,8 @@ impl RenderableAction {
         let theme = appearance.theme();
         Self {
             body: FormattedTextOrElement::Element(element),
+            body_text: None,
+            body_tooltip_mouse_state: None,
             icon: None,
             header: None,
             footer: None,
@@ -125,6 +134,16 @@ impl RenderableAction {
 
     pub fn with_icon(mut self, icon: Box<dyn Element>) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    pub fn with_body_tooltip(mut self, mouse_state: MouseStateHandle) -> Self {
+        if self.body_text.is_none()
+            && let FormattedTextOrElement::FormattedText(formatted_text) = &self.body
+        {
+            self.body_text = Some(formatted_text.raw_text().trim_end_matches('\n').to_owned());
+        }
+        self.body_tooltip_mouse_state = Some(mouse_state);
         self
     }
 
@@ -180,10 +199,11 @@ impl RenderableAction {
             has_header = true;
         }
 
-        content.add_child(render_requested_action_row(
+        content.add_child(render_requested_action_row_with_tooltip(
             self.body,
             self.icon,
             self.action_button,
+            self.body_text.zip(self.body_tooltip_mouse_state),
             true,
             has_header,
             app,
@@ -280,12 +300,39 @@ pub(crate) fn render_requested_action_row(
     has_header_above: bool,
     app: &AppContext,
 ) -> Box<dyn Element> {
+    render_requested_action_row_with_tooltip(
+        text,
+        icon,
+        action_button,
+        None,
+        is_text_selectable,
+        has_header_above,
+        app,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_requested_action_row_with_tooltip(
+    text: FormattedTextOrElement,
+    icon: Option<Box<dyn Element>>,
+    action_button: Option<Box<dyn Element>>,
+    tooltip: Option<(String, MouseStateHandle)>,
+    is_text_selectable: bool,
+    has_header_above: bool,
+    app: &AppContext,
+) -> Box<dyn Element> {
     let element = match text {
         FormattedTextOrElement::FormattedText(formatted_text) => {
             formatted_text.set_selectable(is_text_selectable).finish()
         }
         FormattedTextOrElement::Element(element) => element,
     };
+    let element =
+        if let Some((tooltip_text, mouse_state)) = tooltip.filter(|(text, _)| !text.is_empty()) {
+            render_action_text_with_tooltip(element, tooltip_text, mouse_state, app)
+        } else {
+            element
+        };
     render_requested_action_row_for_element(element, icon, action_button, has_header_above, app)
 }
 

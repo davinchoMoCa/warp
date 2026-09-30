@@ -1,6 +1,46 @@
 //! Unit tests for format_command_text in requested_command.rs
 
-use super::{format_command_text, mcp_blocked_title_text, mcp_viewing_detail_title_text};
+use super::{
+    RequestedActionViewType, format_command_text, header_tooltip_text, mcp_blocked_title_text,
+    mcp_viewing_detail_title_text,
+};
+
+#[test]
+fn command_header_tooltip_preserves_content_hidden_by_preview() {
+    let command = "printf 'first'\nprintf 'second'";
+    assert_eq!(
+        header_tooltip_text(
+            &RequestedActionViewType::Command,
+            command,
+            &format_command_text(command),
+        ),
+        command
+    );
+}
+
+#[test]
+fn command_header_tooltip_keeps_status_message_instead_of_command() {
+    assert_eq!(
+        header_tooltip_text(
+            &RequestedActionViewType::Command,
+            "printf 'first'\nprintf 'second'",
+            "Viewing command detail",
+        ),
+        "Viewing command detail"
+    );
+}
+
+#[test]
+fn mcp_header_tooltip_uses_full_display_label() {
+    assert_eq!(
+        header_tooltip_text(
+            &RequestedActionViewType::McpTool,
+            "MCP Tool: create_issue ({\"title\":\"hello\"})",
+            "create_issue on github",
+        ),
+        "create_issue on github"
+    );
+}
 
 #[test]
 fn single_line_without_newline_is_unchanged_ascii() {

@@ -501,15 +501,18 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                                 appearance.ui_font_family(),
                                                 app,
                                             );
-                                            let renderable_action =
+                                            let renderable_action = with_action_text_tooltip(
                                                 RenderableAction::new_with_formatted_text(
                                                     formatted_text,
                                                     app,
-                                                )
-                                                .with_icon(
-                                                    inline_action_icons::red_x_icon(appearance)
-                                                        .finish(),
-                                                );
+                                                ),
+                                                props,
+                                                id,
+                                            )
+                                            .with_icon(
+                                                inline_action_icons::red_x_icon(appearance)
+                                                    .finish(),
+                                            );
                                             output_items
                                                 .add_child(renderable_action.render(app).finish());
                                             continue;
@@ -1344,6 +1347,18 @@ fn should_render_stopped_output(props: Props, app: &AppContext) -> bool {
     }) || cancellation_reason.is_some()
 }
 
+fn with_action_text_tooltip(
+    action: RenderableAction,
+    props: Props,
+    id: &AIAgentActionId,
+) -> RenderableAction {
+    if let Some(mouse_state) = props.state_handles.action_text_tooltip_handles.get(id) {
+        action.with_body_tooltip(mouse_state.clone())
+    } else {
+        action
+    }
+}
+
 // Helper function to style a requested action with standard styling when streaming and action blocked on user
 fn renderable_action(
     props: Props,
@@ -1354,7 +1369,8 @@ fn renderable_action(
     appearance: &Appearance,
     status: Option<&AIActionStatus>,
 ) -> RenderableAction {
-    let mut requested_action = RenderableAction::new(text, app);
+    let mut requested_action =
+        with_action_text_tooltip(RenderableAction::new(text, app), props, id);
     let is_blocked_on_user = status.as_ref().is_some_and(|s| s.is_blocked());
     if is_blocked_on_user {
         requested_action =
@@ -1842,7 +1858,11 @@ fn render_read_skill(
         app,
     );
 
-    let mut renderable_action = RenderableAction::new_with_formatted_text(formatted_text, app);
+    let mut renderable_action = with_action_text_tooltip(
+        RenderableAction::new_with_formatted_text(formatted_text, app),
+        props,
+        id,
+    );
     renderable_action =
         renderable_action.with_icon(action_icon(id, props.action_model, props.model, app).finish());
 
@@ -2016,7 +2036,11 @@ fn render_read_files(
     let formatted_files =
         render_read_files_text(props.into(), file_names, app, appearance, action_index);
 
-    let mut renderable_action = RenderableAction::new_with_formatted_text(formatted_files, app);
+    let mut renderable_action = with_action_text_tooltip(
+        RenderableAction::new_with_formatted_text(formatted_files, app),
+        props,
+        id,
+    );
 
     if status.as_ref().is_some_and(|status| status.is_blocked()) {
         let buttons = props
@@ -2746,7 +2770,11 @@ fn render_file_retrieval_tool(
     let appearance = Appearance::as_ref(app);
     let status = props.action_model.as_ref(app).get_action_status(action_id);
 
-    let mut config = RenderableAction::new_with_formatted_text(tool_formatted_text, app);
+    let mut config = with_action_text_tooltip(
+        RenderableAction::new_with_formatted_text(tool_formatted_text, app),
+        props,
+        action_id,
+    );
 
     if status.as_ref().is_some_and(|status| status.is_blocked()) {
         let buttons = props
@@ -2863,7 +2891,8 @@ fn render_read_mcp_resource(
     let appearance = Appearance::as_ref(app);
     let status = props.action_model.as_ref(app).get_action_status(action_id);
 
-    let mut renderable_action = RenderableAction::new(name, app);
+    let mut renderable_action =
+        with_action_text_tooltip(RenderableAction::new(name, app), props, action_id);
 
     if status.as_ref().is_some_and(|status| status.is_blocked()) {
         let buttons = props
@@ -2949,7 +2978,8 @@ fn render_upload_artifact(
         });
 
     let text = format_upload_artifact_text(request, result);
-    let mut renderable_action = RenderableAction::new(&text, app);
+    let mut renderable_action =
+        with_action_text_tooltip(RenderableAction::new(&text, app), props, action_id);
 
     if status.as_ref().is_some_and(|status| status.is_blocked()) {
         let buttons = props
@@ -3199,8 +3229,12 @@ fn render_use_computer(
 ) -> Box<dyn Element> {
     let appearance = Appearance::handle(app).as_ref(app);
 
-    let mut renderable_action = RenderableAction::new(&request.action_summary, app)
-        .with_icon(action_icon(action_id, props.action_model, props.model, app).finish());
+    let mut renderable_action = with_action_text_tooltip(
+        RenderableAction::new(&request.action_summary, app),
+        props,
+        action_id,
+    )
+    .with_icon(action_icon(action_id, props.action_model, props.model, app).finish());
 
     if should_decorate_recorded_use_computer(request)
         && let Some(recording_span) = recording_span
@@ -3259,7 +3293,11 @@ fn render_request_computer_use(
     let appearance = Appearance::as_ref(app);
     let status = props.action_model.as_ref(app).get_action_status(action_id);
 
-    let mut renderable_action = RenderableAction::new(&request.task_summary, app);
+    let mut renderable_action = with_action_text_tooltip(
+        RenderableAction::new(&request.task_summary, app),
+        props,
+        action_id,
+    );
 
     if status.as_ref().is_some_and(|status| status.is_blocked()) {
         let buttons = props
