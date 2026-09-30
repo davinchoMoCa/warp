@@ -1,7 +1,13 @@
+use std::cell::Cell;
+use std::io::Read;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use tempfile::TempDir;
+use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 
 use super::*;
 
@@ -325,17 +331,73 @@ fn test_parse_skill_rejects_oversized_file() {
 }
 
 #[test]
-fn test_parse_skill_content_rejects_oversized_input() {
-    let content = "x".repeat(LOCAL_SKILL_MAX_FILE_BYTES as usize + 1);
-    let err = parse_skill_content_at_location(
-        LocalOrRemotePath::Local(PathBuf::from("SKILL.md")),
-        &content,
-        SkillProvider::Agents,
-        SkillScope::Project,
-    )
+fn test_read_bounded_skill_reader_does_not_consume_past_cap() {
+    let bytes_read = Rc::new(Cell::new(0));
+    let source_len = (LOCAL_SKILL_MAX_FILE_BYTES as usize).saturating_mul(4);
+    let err = read_bounded_skill_reader(CountingReader {
+        remaining: source_len,
+        bytes_read: bytes_read.clone(),
+    })
     .unwrap_err();
+
     assert!(
         err.to_string()
             .contains(&LOCAL_SKILL_MAX_FILE_BYTES.to_string())
     );
+    assert_eq!(bytes_read.get(), LOCAL_SKILL_MAX_FILE_BYTES as usize + 1);
+}
+
+struct CountingReader {
+    remaining: usize,
+    bytes_read: Rc<Cell<usize>>,
+}
+
+impl Read for CountingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        let n = buf.len().min(self.remaining);
+        buf[..n].fill(b'x');
+        self.remaining -= n;
+        self.bytes_read.set(self.bytes_read.get() + n);
+        Ok(n)
+    }
+}
+
+#[test]
+fn test_parse_bundled_skill_allows_oversized_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let skill_dir = temp_dir.path().join("bundled-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let skill_file = skill_dir.join("SKILL.md");
+    let mut bytes = b"---\nname: bundled-skill\ndescription: bundled\n---\n".to_vec();
+    bytes.resize(LOCAL_SKILL_MAX_FILE_BYTES as usize + 1, b'x');
+    std::fs::write(&skill_file, &bytes).unwrap();
+
+    let result = parse_bundled_skill(&skill_file).unwrap();
+    assert_eq!(result.name, "bundled-skill");
+    assert_eq!(result.scope, SkillScope::Bundled);
+    assert_eq!(result.content.as_bytes(), bytes);
+}
+
+#[test]
+fn test_parse_skill_content_allows_oversized_remote_input() {
+    let content = format!(
+        "---\nname: remote-skill\ndescription: remote\n---\n{}",
+        "x".repeat(LOCAL_SKILL_MAX_FILE_BYTES as usize + 1)
+    );
+    let path = LocalOrRemotePath::Remote(RemotePath::new(
+        HostId::new("test-host".to_string()),
+        StandardizedPath::try_new("/repo/.agents/skills/remote-skill/SKILL.md").unwrap(),
+    ));
+    let result = parse_skill_content_at_location(
+        path.clone(),
+        &content,
+        SkillProvider::Agents,
+        SkillScope::Project,
+    )
+    .unwrap();
+    assert_eq!(result.path, path);
+    assert_eq!(result.content, content);
 }

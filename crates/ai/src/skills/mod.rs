@@ -11,8 +11,9 @@ pub use conversion::{
 };
 pub use listed_skill::SkillDescriptor;
 pub use parse_skill::{
-    LOCAL_SKILL_MAX_BATCH_BYTES, LOCAL_SKILL_MAX_FILE_BYTES, ParsedSkill, parse_bundled_skill,
-    parse_skill, parse_skill_content_at_location, read_bounded_local_skill_content,
+    LOCAL_SKILL_MAX_BATCH_BYTES, LOCAL_SKILL_MAX_FILE_BYTES, ParseSkillError, ParsedSkill,
+    parse_bundled_skill, parse_skill, parse_skill_content_at_location,
+    read_bounded_local_skill_content,
 };
 pub use read_skills::{
     WARP_SKILL_DIRS_ENV, parse_skills_dirs_env, read_skills, read_skills_for_skills_dirs,

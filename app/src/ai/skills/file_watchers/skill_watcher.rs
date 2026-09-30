@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use ai::skills::{
-    LOCAL_SKILL_MAX_BATCH_BYTES, LOCAL_SKILL_MAX_FILE_BYTES, ParsedSkill,
-    SKILL_PROVIDER_DEFINITIONS, SkillProvider, SkillScope, get_provider_for_path, home_skills_path,
-    parse_skill, parse_skill_content_at_location, read_bounded_local_skill_content,
+    LOCAL_SKILL_MAX_BATCH_BYTES, ParseSkillError, ParsedSkill, SKILL_PROVIDER_DEFINITIONS,
+    SkillProvider, SkillScope, get_provider_for_path, home_skills_path, parse_skill,
+    parse_skill_content_at_location, read_bounded_local_skill_content,
 };
 use async_channel::Sender;
 use futures::future::BoxFuture;
@@ -264,7 +263,7 @@ impl SkillWatcher {
         self.spawn_read_project_skills_from_files(
             repo_id.clone(),
             refresh_generation,
-            current_skill_files.iter().cloned().collect(),
+            sorted_project_skill_paths(current_skill_files.iter().cloned()),
             ctx,
         );
 
@@ -1044,10 +1043,19 @@ impl SkillWatcher {
     }
 }
 
+fn sorted_project_skill_paths(
+    skill_paths: impl IntoIterator<Item = LocalOrRemotePath>,
+) -> Vec<LocalOrRemotePath> {
+    let mut skill_paths: Vec<_> = skill_paths.into_iter().collect();
+    skill_paths.sort_by_key(|path| path.display_path());
+    skill_paths
+}
+
 fn read_and_parse_project_skills(
     skill_paths: Vec<LocalOrRemotePath>,
     ctx: &AppContext,
 ) -> Option<ProjectSkillsFuture> {
+    let skill_paths = sorted_project_skill_paths(skill_paths);
     match skill_paths.first()? {
         LocalOrRemotePath::Local(_) => Some(Box::pin(async move {
             Ok(parse_local_project_skills(skill_paths))
@@ -1075,24 +1083,25 @@ fn parse_listed_local_skill(path: &Path) -> anyhow::Result<ParsedSkill> {
 fn parse_local_project_skills(skill_paths: Vec<LocalOrRemotePath>) -> Vec<ParsedSkill> {
     let mut skills = Vec::new();
     let mut accepted_bytes = 0u64;
-    for path in skill_paths {
+    for path in sorted_project_skill_paths(skill_paths) {
         let Some(local_path) = path.to_local_path() else {
             continue;
         };
-        let Ok(file_bytes) = fs::metadata(local_path).map(|metadata| metadata.len()) else {
-            continue;
+        let content = match read_bounded_local_skill_content(local_path) {
+            Ok(content) => content,
+            Err(err) if is_skill_file_too_large(&err) => {
+                safe_warn!(
+                    safe: ("Skipping oversized local project skill"),
+                    full: (
+                        "Skipping oversized local project skill {}: {err}",
+                        path.display_path()
+                    )
+                );
+                continue;
+            }
+            Err(_) => continue,
         };
-        if file_bytes > LOCAL_SKILL_MAX_FILE_BYTES {
-            safe_warn!(
-                safe: ("Skipping oversized local project skill"),
-                full: (
-                    "Skipping oversized local project skill {} ({file_bytes} bytes)",
-                    path.display_path()
-                )
-            );
-            continue;
-        }
-        if accepted_bytes.saturating_add(file_bytes) > LOCAL_SKILL_MAX_BATCH_BYTES {
+        if accepted_bytes.saturating_add(content.len() as u64) > LOCAL_SKILL_MAX_BATCH_BYTES {
             safe_warn!(
                 safe: ("Stopped local project skill ingest after reaching the batch size limit"),
                 full: (
@@ -1102,9 +1111,6 @@ fn parse_local_project_skills(skill_paths: Vec<LocalOrRemotePath>) -> Vec<Parsed
             );
             break;
         }
-        let Ok(content) = read_bounded_local_skill_content(local_path) else {
-            continue;
-        };
         let provider = get_provider_for_path(&path).unwrap_or(SkillProvider::Agents);
         let Ok(mut skill) =
             parse_skill_content_at_location(path, &content, provider, SkillScope::Project)
@@ -1116,6 +1122,11 @@ fn parse_local_project_skills(skill_paths: Vec<LocalOrRemotePath>) -> Vec<Parsed
         skills.push(skill);
     }
     skills
+}
+
+fn is_skill_file_too_large(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<ParseSkillError>()
+        .is_some_and(|error| matches!(error, ParseSkillError::FileTooLarge { .. }))
 }
 
 fn parse_project_skill_contents(

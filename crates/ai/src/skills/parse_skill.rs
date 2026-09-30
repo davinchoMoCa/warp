@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::ops::Range;
 use std::path::Path;
 
@@ -36,7 +37,6 @@ pub fn parse_skill_content_at_location(
     provider: SkillProvider,
     scope: SkillScope,
 ) -> Result<ParsedSkill> {
-    reject_oversized_skill_content(content)?;
     let parsed = parse_markdown_content(content)?;
     let name = match parsed
         .front_matter
@@ -165,7 +165,13 @@ pub fn parse_skill(path: &Path) -> Result<ParsedSkill> {
 /// # Returns
 /// * `Result<ParsedSkill>` - Parsed skill with validated name and description
 pub fn parse_bundled_skill(path: &Path) -> Result<ParsedSkill> {
-    parse_local_skill_internal(path, SkillProvider::Warp, SkillScope::Bundled)
+    let content = fs::read_to_string(path)?;
+    parse_skill_content_at_location(
+        LocalOrRemotePath::Local(path.to_path_buf()),
+        &content,
+        SkillProvider::Warp,
+        SkillScope::Bundled,
+    )
 }
 
 fn parse_local_skill_internal(
@@ -184,24 +190,19 @@ fn parse_local_skill_internal(
 
 /// Reads a local skill file, rejecting it if it exceeds [`LOCAL_SKILL_MAX_FILE_BYTES`].
 pub fn read_bounded_local_skill_content(path: &Path) -> Result<String> {
-    let file_bytes = fs::metadata(path)?.len();
-    if file_bytes > LOCAL_SKILL_MAX_FILE_BYTES {
-        anyhow::bail!(ParseSkillError::FileTooLarge {
-            max_bytes: LOCAL_SKILL_MAX_FILE_BYTES,
-        });
-    }
-    let content = fs::read_to_string(path)?;
-    reject_oversized_skill_content(&content)?;
-    Ok(content)
+    read_bounded_skill_reader(fs::File::open(path)?)
 }
 
-fn reject_oversized_skill_content(content: &str) -> Result<()> {
-    if content.len() as u64 > LOCAL_SKILL_MAX_FILE_BYTES {
+fn read_bounded_skill_reader(reader: impl Read) -> Result<String> {
+    let mut limited = reader.take(LOCAL_SKILL_MAX_FILE_BYTES.saturating_add(1));
+    let mut buf = Vec::new();
+    limited.read_to_end(&mut buf)?;
+    if buf.len() as u64 > LOCAL_SKILL_MAX_FILE_BYTES {
         anyhow::bail!(ParseSkillError::FileTooLarge {
             max_bytes: LOCAL_SKILL_MAX_FILE_BYTES,
         });
     }
-    Ok(())
+    Ok(String::from_utf8(buf)?)
 }
 
 fn derive_skill_name_from_path(path: &LocalOrRemotePath) -> Result<String> {

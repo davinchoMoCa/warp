@@ -112,6 +112,23 @@ fn parse_project_skill_contents_classifies_foreign_encoded_provider_path() {
     assert_eq!(skills[0].provider, SkillProvider::Codex);
 }
 
+#[test]
+fn parse_project_skill_contents_keeps_oversized_remote_body() {
+    let host = HostId::new("test-host".to_string());
+    let path = remote_skill_path(&host, "huge");
+    let content = format!(
+        "{}{}",
+        remote_skill_content("huge", "Huge skill", ""),
+        "x".repeat(LOCAL_SKILL_MAX_FILE_BYTES as usize + 1)
+    );
+
+    let skills = parse_project_skill_contents(vec![(path.clone(), content.clone())]);
+
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].path, path);
+    assert_eq!(skills[0].content, content);
+}
+
 fn write_sized_local_skill(
     parent_dir: &std::path::Path,
     name: &str,
@@ -170,7 +187,7 @@ fn parse_local_project_skills_stops_at_aggregate_byte_limit() {
             max_file,
         ));
     }
-    let leftover = write_sized_local_skill(temp_dir.path(), "leftover", 64);
+    let leftover = write_sized_local_skill(temp_dir.path(), "skill-5", 64);
     paths.push(leftover.clone());
 
     let skills = parse_local_project_skills(paths);
@@ -185,6 +202,32 @@ fn parse_local_project_skills_stops_at_aggregate_byte_limit() {
     );
     assert!(skills.iter().all(|skill| skill.content.is_empty()));
     assert!(skills.iter().all(|skill| skill.path != leftover));
+}
+
+#[test]
+fn parse_local_project_skills_cutoff_is_stable_for_shuffled_input() {
+    let temp_dir = TempDir::new().unwrap();
+    let max_file = LOCAL_SKILL_MAX_FILE_BYTES as usize;
+    let mut paths = vec![
+        write_sized_local_skill(temp_dir.path(), "skill-4", max_file),
+        write_sized_local_skill(temp_dir.path(), "skill-1", max_file),
+        write_sized_local_skill(temp_dir.path(), "skill-5", 64),
+        write_sized_local_skill(temp_dir.path(), "skill-0", max_file),
+        write_sized_local_skill(temp_dir.path(), "skill-3", max_file),
+        write_sized_local_skill(temp_dir.path(), "skill-2", max_file),
+    ];
+    paths.reverse();
+
+    let skills = parse_local_project_skills(paths);
+
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["skill-0", "skill-1", "skill-2", "skill-3", "skill-4"]
+    );
+    assert!(skills.iter().all(|skill| skill.content.is_empty()));
 }
 
 #[test]
