@@ -110,10 +110,19 @@ pub fn orchestration_root_conversation_id(
     let mut current = conversation_id;
     let mut visited = HashSet::new();
     while visited.insert(current) {
-        let Some(parent) = history.resolved_parent_conversation_id(&current) else {
-            return (!history.child_conversation_ids_of(&current).is_empty()).then_some(current);
-        };
-        current = parent;
+        match history.resolved_parent_conversation_id(&current) {
+            Some(parent) if history.is_known_conversation(&parent) => {
+                current = parent;
+            }
+            Some(_) => return None,
+            None => {
+                if !history.is_known_conversation(&current) {
+                    return None;
+                }
+                return (!history.child_conversation_ids_of(&current).is_empty())
+                    .then_some(current);
+            }
+        }
     }
     None
 }

@@ -567,6 +567,20 @@ impl BlocklistAIHistoryModel {
             })
     }
 
+    /// Whether this id has a loaded body, a startup overlay, or historical metadata.
+    ///
+    /// `children_by_parent` is not enough: a child can be indexed under a parent
+    /// whose record was dropped (startup cap, un-restorable row).
+    pub(crate) fn is_known_conversation(&self, conversation_id: &AIConversationId) -> bool {
+        self.conversations_by_id.contains_key(conversation_id)
+            || self
+                .orchestration_child_identities
+                .contains_key(conversation_id)
+            || self
+                .all_conversations_metadata
+                .contains_key(conversation_id)
+    }
+
     fn index_child_conversation(
         &mut self,
         child_id: AIConversationId,
