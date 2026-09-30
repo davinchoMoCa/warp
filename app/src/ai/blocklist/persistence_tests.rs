@@ -118,6 +118,7 @@ fn persisted_query_drops_skill_snapshots() {
         user_query_mode: UserQueryMode::default(),
         running_command: None,
         intended_agent: None,
+        base: None,
     };
 
     let PersistedAIInputType::Query { context, text, .. } =

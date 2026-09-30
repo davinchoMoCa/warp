@@ -1025,8 +1025,7 @@ impl BlocklistAIHistoryModel {
         conversation_data: AgentConversationData,
         ctx: &mut ModelContext<Self>,
     ) {
-        if conversation_data.is_remote_child && FeatureFlag::OrchestrationUnifiedStack.is_enabled()
-        {
+        if conversation_data.is_remote_child {
             return;
         }
         if !*GeneralSettings::as_ref(ctx).restore_session
