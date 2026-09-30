@@ -16,7 +16,6 @@ use warp_graphql::queries::get_runners::{
 use super::ServerApi;
 use crate::server::graphql::{get_request_context, get_user_facing_error_message};
 use crate::server::team_scope::RequestTeamScope;
-use crate::workspaces::user_workspaces::HeadlessTeamScope;
 
 #[derive(serde::Deserialize)]
 struct FactoryAccessResponse {
@@ -66,12 +65,7 @@ pub trait FactoryClient: 'static + Send + Sync {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl FactoryClient for ServerApi {
     async fn has_factory_access(&self) -> Result<bool> {
-        let response: FactoryAccessResponse = self
-            .get_public_api_for_team(
-                "factory/access",
-                RequestTeamScope::from_scope(&HeadlessTeamScope::Personal),
-            )
-            .await?;
+        let response: FactoryAccessResponse = self.get_public_api("factory/access").await?;
         Ok(response.allowed)
     }
 
