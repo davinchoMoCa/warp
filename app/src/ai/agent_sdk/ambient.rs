@@ -576,7 +576,6 @@ impl AmbientAgentRunner {
                     TeamScopeForCli::Team(_) => true,
                 }),
                 agent_identity_uid: args.agent_uid,
-                factory_uid: None,
                 skill,
                 attachments,
                 interactive: None,

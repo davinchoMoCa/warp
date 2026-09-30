@@ -39,7 +39,6 @@ fn task(
         conversation_id: conversation_id.map(str::to_string),
         request_usage: None,
         is_sandbox_running,
-        factory: None,
         agent_config_snapshot: None,
         artifacts: vec![],
         last_event_sequence: None,

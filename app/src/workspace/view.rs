@@ -16052,21 +16052,15 @@ impl Workspace {
     ) {
         let provisional = target.lock().ok().and_then(|slot| slot.clone());
         let factory_failure = failure
-            .request
+            .restoration
             .as_ref()
-            .is_some_and(|request| request.factory_uid.is_some())
-            || (provisional.is_some()
-                && failure.request.is_none()
-                && failure
-                    .restoration
-                    .as_ref()
-                    .and_then(|restoration| restoration.selected_choice.as_ref())
-                    .is_some_and(|choice| {
-                        matches!(
-                            choice,
-                            crate::ai::cloud_environments::CloudSelectorChoice::Factory { .. }
-                        )
-                    }));
+            .and_then(|restoration| restoration.selected_choice.as_ref())
+            .is_some_and(|choice| {
+                matches!(
+                    choice,
+                    crate::ai::cloud_environments::CloudSelectorChoice::Factory { .. }
+                )
+            });
         if factory_failure || failure.request.is_none() || provisional.is_none() {
             if let Some((target_view, model)) = provisional {
                 target_view.update(ctx, |view, ctx| {

@@ -71,7 +71,7 @@ fn factory_selector_sends_team_scope_and_parses_page() {
 }
 
 #[test]
-fn factory_spawn_serializes_both_attribution_and_foreman_without_snapshot_overrides() {
+fn factory_spawn_serializes_foreman_without_snapshot_overrides() {
     let request = SpawnAgentRequest {
         prompt: Some("Build".to_owned()),
         mode: UserQueryMode::Normal,
@@ -82,7 +82,6 @@ fn factory_spawn_serializes_both_attribution_and_foreman_without_snapshot_overri
         title: None,
         team: Some(true),
         agent_identity_uid: Some("foreman-12".to_owned()),
-        factory_uid: Some("factory-12".to_owned()),
         skill: None,
         attachments: vec![],
         interactive: Some(true),
@@ -95,8 +94,8 @@ fn factory_spawn_serializes_both_attribution_and_foreman_without_snapshot_overri
         orchestration_handoff: None,
     };
     let value = serde_json::to_value(request).expect("serialize Factory spawn");
-    assert_eq!(value["factory_uid"], "factory-12");
     assert_eq!(value["agent_identity_uid"], "foreman-12");
+    assert!(value.get("factory_uid").is_none());
     assert!(value["config"]["model_id"].is_null());
     assert!(value["config"]["worker_host"].is_null());
 }
@@ -336,7 +335,6 @@ fn spawn_agent_request_serializes_explicit_personal_ownership() {
         title: None,
         team: Some(false),
         agent_identity_uid: None,
-        factory_uid: None,
         skill: None,
         attachments: vec![],
         interactive: None,
@@ -364,7 +362,6 @@ fn spawn_agent_request_serializes_agent_uid_as_agent_identity_uid() {
         title: None,
         team: None,
         agent_identity_uid: Some("agent_123".to_string()),
-        factory_uid: None,
         skill: None,
         attachments: vec![],
         interactive: None,
@@ -464,7 +461,6 @@ fn spawn_agent_request_omits_prompt_when_none() {
         title: None,
         team: None,
         agent_identity_uid: None,
-        factory_uid: None,
         skill: None,
         attachments: vec![],
         interactive: None,

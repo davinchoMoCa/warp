@@ -42,7 +42,6 @@ fn task_with_run_time_and_credits() -> AmbientAgentTask {
             compute_cost_usd: None,
             platform_cost_usd: None,
         }),
-        factory: None,
         agent_config_snapshot: None,
         artifacts: vec![],
         is_sandbox_running: false,

@@ -130,19 +130,6 @@ impl EnvironmentSelectorTarget {
         }
     }
 
-    fn viewed_factory_name<'a>(&'a self, ctx: &'a AppContext) -> Option<&'a str> {
-        match self {
-            Self::CloudPane(model) => model.as_ref(ctx).viewed_factory_name(),
-            Self::Handoff(_) => None,
-        }
-    }
-
-    fn viewed_environment_name<'a>(&'a self, ctx: &'a AppContext) -> Option<&'a str> {
-        match self {
-            Self::CloudPane(model) => model.as_ref(ctx).viewed_environment_name(),
-            Self::Handoff(_) => None,
-        }
-    }
     fn selected_environment_id(&self, ctx: &AppContext) -> Option<SyncId> {
         match self {
             Self::CloudPane(model) => model.as_ref(ctx).selected_environment_id().cloned(),
@@ -711,18 +698,9 @@ impl EnvironmentSelector {
         if self.factory_enabled() {
             let label = if !is_configuring {
                 self.target
-                    .viewed_factory_name(ctx)
-                    .map(|name| {
-                        let environment =
-                            self.target.viewed_environment_name(ctx).unwrap_or_default();
-                        format!("{name} · Factory · {environment}")
-                    })
-                    .or_else(|| {
-                        self.target
-                            .selected_environment_id(ctx)
-                            .and_then(|id| self.environments.as_ref(ctx).environment(id))
-                            .map(|env| env.name.clone())
-                    })
+                    .selected_environment_id(ctx)
+                    .and_then(|id| self.environments.as_ref(ctx).environment(id))
+                    .map(|env| env.name.clone())
                     .unwrap_or_else(|| "Empty environment".to_owned())
             } else if let Some(item) = self
                 .visible_choices(ctx)

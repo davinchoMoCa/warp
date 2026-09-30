@@ -47,7 +47,6 @@ fn assert_failed_factory_handoff_restores_source(server_rejection: bool) {
             title: None,
             team: Some(true),
             agent_identity_uid: Some("foreman-12".to_owned()),
-            factory_uid: Some("factory-12".to_owned()),
             skill: None,
             attachments: vec![],
             interactive: Some(true),

@@ -453,7 +453,6 @@ fn retry_request(prompt: impl Into<String>) -> SpawnAgentRequest {
         title: Some("Retry title".to_string()),
         team: Some(true),
         agent_identity_uid: Some("agent-123".to_string()),
-        factory_uid: None,
         skill: None,
         attachments: vec![attachment()],
         interactive: Some(true),

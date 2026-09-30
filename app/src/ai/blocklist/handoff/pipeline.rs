@@ -1167,10 +1167,6 @@ fn build_spawn_request(
             }) => Some(foreman_agent_uid.clone()),
             _ => None,
         },
-        factory_uid: match selected_choice {
-            Some(CloudSelectorChoice::Factory { uid, .. }) => Some(uid),
-            _ => None,
-        },
         snapshot_disabled: snapshot_disabled.then_some(true),
         orchestration_handoff,
     }

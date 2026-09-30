@@ -78,7 +78,10 @@ async fn revoked_factory_after_materialization_preserves_source_draft_without_sp
         let materialized = materialized.clone();
         move |target| {
             Box::pin(async move {
-                assert_eq!(target.request.factory_uid.as_deref(), Some("factory-12"));
+                assert_eq!(
+                    target.request.agent_identity_uid.as_deref(),
+                    Some("foreman-12")
+                );
                 materialized.store(true, Ordering::SeqCst);
                 Ok(())
             })
@@ -137,7 +140,6 @@ fn factory_handoff_uses_the_foreman_and_only_its_default_environment() {
         None,
         pending.team_scope,
     );
-    assert_eq!(request.factory_uid.as_deref(), Some("factory-12"));
     assert_eq!(request.agent_identity_uid.as_deref(), Some("foreman-12"));
     assert_eq!(
         request

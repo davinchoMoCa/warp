@@ -144,8 +144,6 @@ pub struct AmbientAgentViewModel {
     environment_id: Option<SyncId>,
     selected_choice: Option<CloudSelectorChoice>,
     selection_invalidated: bool,
-    viewed_factory_name: Option<String>,
-    viewed_environment_name: Option<String>,
     /// True when `environment_id` came from an existing run config rather than from local
     /// environment selection/defaulting. Existing runs may reference an environment before the
     /// local CloudModel has loaded it, so initial-load validation should not clear it.
@@ -258,8 +256,6 @@ impl AmbientAgentViewModel {
             environment_id: None,
             selected_choice: None,
             selection_invalidated: false,
-            viewed_factory_name: None,
-            viewed_environment_name: None,
             environment_id_from_viewed_task: false,
             progress_timer_handle: None,
             ui_state,
@@ -477,14 +473,6 @@ impl AmbientAgentViewModel {
 
     pub(crate) fn selection_invalidated(&self) -> bool {
         self.selection_invalidated
-    }
-
-    pub(crate) fn viewed_factory_name(&self) -> Option<&str> {
-        self.viewed_factory_name.as_deref()
-    }
-
-    pub(crate) fn viewed_environment_name(&self) -> Option<&str> {
-        self.viewed_environment_name.as_deref()
     }
 
     pub(crate) fn invalidate_choice(&mut self, ctx: &mut ModelContext<Self>) {
@@ -931,12 +919,6 @@ impl AmbientAgentViewModel {
             move |me, result, ctx| match result {
                 Ok(task) => {
                     me.source = task.source.clone();
-                    me.viewed_environment_name = task
-                        .factory
-                        .as_ref()
-                        .map(|factory| factory.environment_name.clone());
-                    me.viewed_factory_name =
-                        task.factory.as_ref().map(|factory| factory.name.clone());
                     me.apply_viewed_task_config_snapshot(task.agent_config_snapshot.as_ref(), ctx);
                     ctx.emit(AmbientAgentViewModelEvent::ViewerHarnessResolved);
                 }
@@ -1153,8 +1135,6 @@ impl AmbientAgentViewModel {
         self.environment_id = None;
         self.selected_choice = None;
         self.selection_invalidated = false;
-        self.viewed_factory_name = None;
-        self.viewed_environment_name = None;
         self.environment_id_from_viewed_task = false;
         self.task_id = None;
         self.source = None;
@@ -1262,13 +1242,11 @@ impl AmbientAgentViewModel {
             return;
         }
         let config = Some(self.build_default_spawn_config(scope, ctx));
-        let (factory_uid, agent_identity_uid) = match &self.selected_choice {
+        let agent_identity_uid = match &self.selected_choice {
             Some(CloudSelectorChoice::Factory {
-                uid,
-                foreman_agent_uid,
-                ..
-            }) => (Some(uid.clone()), Some(foreman_agent_uid.clone())),
-            _ => (None, None),
+                foreman_agent_uid, ..
+            }) => Some(foreman_agent_uid.clone()),
+            _ => None,
         };
 
         let (prompt, mode) = extract_user_query_mode(prompt);
@@ -1279,7 +1257,6 @@ impl AmbientAgentViewModel {
             title: None,
             team: Some(scope.team_uid().is_some()),
             agent_identity_uid,
-            factory_uid,
             skill: None,
             attachments,
             interactive: None,
