@@ -126,7 +126,8 @@ impl TryFrom<&AIAgentInput> for PersistedAIInputType {
             | AIAgentInput::StartFromAmbientRunPrompt { .. }
             | AIAgentInput::MessagesReceivedFromAgents { .. }
             | AIAgentInput::EventsFromAgents { .. }
-            | AIAgentInput::OrchestrationConfigUpdate { .. } => Err(anyhow::anyhow!(
+            | AIAgentInput::OrchestrationConfigUpdate { .. }
+            | AIAgentInput::AgentWake => Err(anyhow::anyhow!(
                 "This input type is not persisted. Only Query inputs are persisted for up-arrow history."
             )),
         }
@@ -150,6 +151,7 @@ impl TryFrom<PersistedAIInputType> for AIAgentInput {
                 user_query_mode: UserQueryMode::default(),
                 running_command: None,
                 intended_agent: None,
+                base: None,
             }),
         }
     }
