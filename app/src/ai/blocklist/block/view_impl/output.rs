@@ -88,7 +88,7 @@ use crate::ai::blocklist::inline_action::create_or_edit_document::CreateOrEditDo
 use crate::ai::blocklist::inline_action::gemini_enterprise_credentials_error::GeminiEnterpriseCredentialsErrorView;
 use crate::ai::blocklist::inline_action::inline_action_header::{
     HeaderConfig, INLINE_ACTION_HEADER_VERTICAL_PADDING, INLINE_ACTION_HORIZONTAL_PADDING,
-    InteractionMode,
+    InteractionMode, render_action_text_with_tooltip,
 };
 use crate::ai::blocklist::inline_action::inline_action_icons::{self, icon_size};
 use crate::ai::blocklist::inline_action::requested_action::{
@@ -1919,6 +1919,10 @@ fn render_inline_action_secondary_button(
     )
 }
 
+fn partial_read_files_tooltip_text(successful_paths: &str, failed_paths: &str) -> String {
+    format!("{successful_paths}\n{failed_paths}")
+}
+
 /// Renders successful and failed file reads as separate sections in one widget.
 fn render_read_files_partial(
     props: Props,
@@ -1965,6 +1969,7 @@ fn render_read_files_partial(
 
     let success_text =
         render_read_files_text(props.into(), file_names, app, appearance, action_index);
+    let successful_paths = success_text.raw_text().trim_end_matches('\n').to_owned();
     let success_row = render_requested_action_row(
         FormattedTextOrElement::FormattedText(Box::new(success_text)),
         Some(inline_action_icons::green_check_icon(appearance).finish()),
@@ -1984,6 +1989,7 @@ fn render_read_files_partial(
             )
         })
         .join("\n");
+    let tooltip_text = partial_read_files_tooltip_text(&successful_paths, &failed_paths);
     let failed_row = render_requested_action_row_for_text(
         failed_paths.into(),
         appearance.ui_font_family(),
@@ -1997,8 +2003,14 @@ fn render_read_files_partial(
     let mut content = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
     content.add_child(success_row);
     content.add_child(failed_row);
+    let content = if let Some(mouse_state) = props.state_handles.action_text_tooltip_handles.get(id)
+    {
+        render_action_text_with_tooltip(content.finish(), tooltip_text, mouse_state.clone(), app)
+    } else {
+        content.finish()
+    };
 
-    Container::new(content.finish())
+    Container::new(content)
         .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
         .with_background_color(internal_colors::neutral_2(theme))
         .with_border(Border::all(1.).with_border_fill(theme.surface_2()))

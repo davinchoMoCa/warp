@@ -14,8 +14,8 @@ use watcher::HomeDirectoryWatcher;
 
 use super::{
     RecordingCardText, format_upload_artifact_text, parsed_skill_for_common_locations,
-    read_skill_display_text, should_decorate_recorded_use_computer, start_recording_card_text,
-    stop_recording_card_text,
+    partial_read_files_tooltip_text, read_skill_display_text,
+    should_decorate_recorded_use_computer, start_recording_card_text, stop_recording_card_text,
 };
 use crate::ai::agent::{
     RecordingStarted, RecordingStopped, StartRecordingResult, StopRecordingResult,
@@ -24,6 +24,17 @@ use crate::ai::agent::{
 use crate::ai::skills::SkillManager;
 use crate::settings::AISettings;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
+
+#[test]
+fn partial_read_files_tooltip_contains_complete_successful_and_failed_paths() {
+    let successful_paths = "/workspace/project/long/nested/path/with/successful/file.rs\n/workspace/project/second/success.rs";
+    let failed_paths = "/workspace/project/long/nested/path/with/failed/file.rs\n/workspace/project/second/failure.rs";
+
+    assert_eq!(
+        partial_read_files_tooltip_text(successful_paths, failed_paths),
+        "/workspace/project/long/nested/path/with/successful/file.rs\n/workspace/project/second/success.rs\n/workspace/project/long/nested/path/with/failed/file.rs\n/workspace/project/second/failure.rs"
+    );
+}
 
 #[test]
 fn format_upload_artifact_text_includes_request_details() {
