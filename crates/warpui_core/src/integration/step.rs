@@ -211,6 +211,7 @@ pub enum IntegrationTestEvent {
 
 pub enum MouseEvent {
     ClickOnce,
+    ClickTwice,
     RightClickOnce,
     Hover,
 }
@@ -495,6 +496,14 @@ impl TestStep {
             ));
         self
     }
+    pub fn with_double_click_on_saved_position<S: Into<String>>(mut self, position_id: S) -> Self {
+        self.events
+            .push_back(IntegrationTestEvent::WithSavedPosition(
+                position_id.into(),
+                MouseEvent::ClickTwice,
+            ));
+        self
+    }
 
     pub fn with_right_click_on_saved_position_fn<F>(mut self, position_fn: F) -> Self
     where
@@ -711,7 +720,7 @@ pub(super) async fn run_step(
 
                 let center = bounds.center();
                 match mouse_event {
-                    MouseEvent::ClickOnce => {
+                    MouseEvent::ClickOnce | MouseEvent::ClickTwice => {
                         record_overlay_kind(
                             overlay::OverlayKind::MouseDown {
                                 x: center.x(),
@@ -719,18 +728,25 @@ pub(super) async fn run_step(
                             },
                             step_data_map,
                         );
-                        let mouse_down = Event::LeftMouseDown {
-                            position: center,
-                            modifiers: Default::default(),
-                            click_count: 1,
-                            is_first_mouse: false,
+                        let click_count = if matches!(mouse_event, MouseEvent::ClickTwice) {
+                            2
+                        } else {
+                            1
                         };
-                        let mouse_up = Event::LeftMouseUp {
-                            position: center,
-                            modifiers: Default::default(),
-                        };
-                        for event in [mouse_down, mouse_up] {
-                            app.update(|ctx| (window.callbacks().event_callback)(event, ctx));
+                        for count in 1..=click_count {
+                            let mouse_down = Event::LeftMouseDown {
+                                position: center,
+                                modifiers: Default::default(),
+                                click_count: count,
+                                is_first_mouse: false,
+                            };
+                            let mouse_up = Event::LeftMouseUp {
+                                position: center,
+                                modifiers: Default::default(),
+                            };
+                            for event in [mouse_down, mouse_up] {
+                                app.update(|ctx| (window.callbacks().event_callback)(event, ctx));
+                            }
                         }
                         record_overlay_kind(
                             overlay::OverlayKind::MouseUp {

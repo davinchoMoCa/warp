@@ -1,4 +1,5 @@
 use regex::Regex;
+use warp::features::FeatureFlag;
 use warp::integration_testing::step::new_step_with_default_assertions;
 use warp::integration_testing::tab::assert_pane_title;
 use warp::integration_testing::terminal::wait_until_bootstrapped_single_pane_for_tab;
@@ -24,6 +25,224 @@ fn open_file_tree_panel(app: &mut App) {
             &WorkspaceAction::ToggleProjectExplorer,
         );
     });
+}
+pub fn test_file_tree_double_click_promotes_inactive_preview() -> Builder {
+    file_tree_tabs_builder()
+        .with_step(file_tree_click_step("alpha.txt", true, &["alpha.txt"], 0))
+        .with_step(file_tree_click_step(
+            "beta.txt",
+            false,
+            &["alpha.txt", "beta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "alpha.txt",
+            false,
+            &["alpha.txt", "beta.txt"],
+            0,
+        ))
+        .with_step(file_tree_click_step(
+            "beta.txt",
+            true,
+            &["alpha.txt", "beta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "gamma.txt",
+            false,
+            &["alpha.txt", "beta.txt", "gamma.txt"],
+            2,
+        ))
+}
+
+fn file_tree_tabs_builder() -> Builder {
+    new_builder()
+        .with_setup(|utils| {
+            let test_dir = utils.test_dir();
+            write_all_rc_files_for_test(&test_dir, format!("cd {}", test_dir.to_string_lossy()));
+            for name in [
+                "alpha.txt",
+                "beta.txt",
+                "gamma.txt",
+                "delta.txt",
+                "epsilon.txt",
+                "zeta.txt",
+            ] {
+                std::fs::write(test_dir.join(name), name).expect("Failed to create sample file");
+            }
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(
+            new_step_with_default_assertions("Enable tabbed editor and open project explorer")
+                .with_action(|app, _, _| {
+                    FeatureFlag::TabbedEditorView.set_enabled(true);
+                    open_file_tree_panel(app);
+                }),
+        )
+}
+
+fn file_tree_click_step(
+    name: &str,
+    double_click: bool,
+    expected: &[&str],
+    active: usize,
+) -> TestStep {
+    let label = format!(
+        "{} {name}",
+        if double_click {
+            "Double-click"
+        } else {
+            "Click"
+        }
+    );
+    let position_id = format!("file_tree_item:{name}");
+    let step = new_step_with_default_assertions(&label);
+    let step = if double_click {
+        step.with_double_click_on_saved_position(position_id)
+    } else {
+        step.with_click_on_saved_position(position_id)
+    };
+    let expected: Vec<String> = expected.iter().map(|name| (*name).to_owned()).collect();
+    step.add_named_assertion(
+        format!("Editor tabs after {label}"),
+        move |app, window_id| {
+            let pane_group = pane_group_view(app, window_id, 0);
+            let (actual, active_index) = pane_group.read(app, |pane_group, ctx| {
+                let (_, code_view) = pane_group.code_panes(ctx).next().expect("code editor pane");
+                code_view.read(ctx, |view, _| {
+                    let tabs = (0..view.tab_count())
+                        .map(|index| {
+                            view.tab_at(index)
+                                .and_then(|tab| tab.location())
+                                .and_then(|location| {
+                                    std::path::Path::new(&location.display_path())
+                                        .file_name()
+                                        .map(|name| name.to_string_lossy().into_owned())
+                                })
+                                .expect("file-backed editor tab")
+                        })
+                        .collect::<Vec<_>>();
+                    (tabs, view.active_tab_index())
+                })
+            });
+            async_assert_eq!((actual, active_index), (expected.clone(), active))
+        },
+    )
+}
+
+pub fn test_file_tree_double_click_preserves_single_preview() -> Builder {
+    file_tree_tabs_builder()
+        .with_step(file_tree_click_step("alpha.txt", false, &["alpha.txt"], 0))
+        .with_step(file_tree_click_step(
+            "beta.txt",
+            true,
+            &["alpha.txt", "beta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "alpha.txt",
+            false,
+            &["alpha.txt", "beta.txt"],
+            0,
+        ))
+        .with_step(file_tree_click_step(
+            "alpha.txt",
+            false,
+            &["alpha.txt", "beta.txt"],
+            0,
+        ))
+        .with_step(file_tree_click_step(
+            "gamma.txt",
+            false,
+            &["gamma.txt", "beta.txt"],
+            0,
+        ))
+        .with_step(file_tree_click_step(
+            "gamma.txt",
+            true,
+            &["gamma.txt", "beta.txt"],
+            0,
+        ))
+        .with_step(
+            TestStep::new("Close gamma and return to one editor tab").with_action(
+                |app, window_id, _| {
+                    let pane_group = pane_group_view(app, window_id, 0);
+                    let code_view = pane_group.read(app, |pane_group, ctx| {
+                        pane_group.code_panes(ctx).next().unwrap().1
+                    });
+                    app.update(|ctx| {
+                        code_view.update(ctx, |view, ctx| {
+                            view.remove_tab_for_move(0, ctx);
+                        });
+                    });
+                },
+            ),
+        )
+        .with_step(file_tree_click_step(
+            "delta.txt",
+            false,
+            &["beta.txt", "delta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "epsilon.txt",
+            false,
+            &["beta.txt", "epsilon.txt"],
+            1,
+        ))
+}
+
+pub fn test_file_tree_persistent_tabs_keep_order_and_evict_preview() -> Builder {
+    file_tree_tabs_builder()
+        .with_step(file_tree_click_step("alpha.txt", true, &["alpha.txt"], 0))
+        .with_step(file_tree_click_step(
+            "beta.txt",
+            true,
+            &["alpha.txt", "beta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "alpha.txt",
+            false,
+            &["alpha.txt", "beta.txt"],
+            0,
+        ))
+        .with_step(file_tree_click_step(
+            "gamma.txt",
+            false,
+            &["alpha.txt", "gamma.txt", "beta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "beta.txt",
+            false,
+            &["alpha.txt", "gamma.txt", "beta.txt"],
+            2,
+        ))
+        .with_step(file_tree_click_step(
+            "delta.txt",
+            false,
+            &["alpha.txt", "beta.txt", "delta.txt"],
+            2,
+        ))
+        .with_step(file_tree_click_step(
+            "alpha.txt",
+            true,
+            &["alpha.txt", "beta.txt", "delta.txt"],
+            0,
+        ))
+        .with_step(file_tree_click_step(
+            "epsilon.txt",
+            false,
+            &["alpha.txt", "epsilon.txt", "beta.txt"],
+            1,
+        ))
+        .with_step(file_tree_click_step(
+            "zeta.txt",
+            true,
+            &["alpha.txt", "zeta.txt", "beta.txt"],
+            1,
+        ))
 }
 
 /// Test that clicking a file in the file tree opens it in Warp's editor.
@@ -125,18 +344,15 @@ pub fn test_file_tree_open_in_new_pane() -> Builder {
         )
 }
 
-/// Test that the "Open in new tab" context menu action works correctly.
-pub fn test_file_tree_open_in_new_tab() -> Builder {
+pub fn test_file_tree_omits_open_in_new_tab() -> Builder {
     new_builder()
         .with_setup(|utils| {
             let test_dir = utils.test_dir();
-            let dir_string = test_dir
-                .to_str()
-                .expect("Should be able to convert test dir to str");
-            write_all_rc_files_for_test(&test_dir, format!("cd {dir_string}"));
-
-            std::fs::write(test_dir.join("config.json"), "{\"key\": \"value\"}")
-                .expect("Failed to create config file");
+            write_all_rc_files_for_test(&test_dir, format!("cd {}", test_dir.to_string_lossy()));
+            std::fs::write(test_dir.join("config.json"), "{}")
+                .expect("Failed to create sample file");
+            std::fs::create_dir(test_dir.join("folder"))
+                .expect("Failed to create sample directory");
         })
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(
@@ -144,41 +360,53 @@ pub fn test_file_tree_open_in_new_tab() -> Builder {
                 .with_action(|app, _, _| open_file_tree_panel(app)),
         )
         .with_step(
-            TestStep::new("Right-click on config.json and select 'Open in new tab'")
+            TestStep::new("File context menu omits new tab")
                 .with_right_click_on_saved_position("file_tree_item:config.json")
-                .with_click_on_saved_position("Open in new tab"),
+                .add_named_assertion(
+                    "File has new-pane but not new-tab action",
+                    |app, window_id| {
+                        let presenter = app.presenter(window_id).expect("window presenter");
+                        let presenter = presenter.borrow();
+                        let positions = presenter.position_cache();
+                        async_assert!(
+                            positions.get_position("Open in new pane").is_some()
+                                && positions.get_position("Open in new tab").is_none(),
+                            "File context menu should retain new pane but omit new tab"
+                        )
+                    },
+                ),
+        )
+}
+
+pub fn test_file_tree_directory_omits_open_in_new_tab() -> Builder {
+    new_builder()
+        .with_setup(|utils| {
+            let test_dir = utils.test_dir();
+            write_all_rc_files_for_test(&test_dir, format!("cd {}", test_dir.to_string_lossy()));
+            std::fs::create_dir(test_dir.join("folder"))
+                .expect("Failed to create sample directory");
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(
+            new_step_with_default_assertions("Open file tree panel")
+                .with_action(|app, _, _| open_file_tree_panel(app)),
         )
         .with_step(
-            TestStep::new("Verify file opened in new tab")
-                .add_assertion(|app, window_id| {
-                    let workspace = workspace_view(app, window_id);
-                    let tab_count = workspace.read(app, |workspace, _ctx| workspace.tab_count());
-                    async_assert_eq!(tab_count, 2, "Expected 2 tabs after 'Open in new tab'")
-                })
-                .add_assertion(|app, window_id| {
-                    let workspace = workspace_view(app, window_id);
-                    let tab_count = workspace.read(app, |workspace, _ctx| workspace.tab_count());
-                    let config_regex = Regex::new(r"config\.json$").unwrap();
-
-                    let mut found = false;
-                    for tab_index in 0..tab_count {
-                        let pane_group = pane_group_view(app, window_id, tab_index);
-                        let title = pane_group.read(app, |pane_group, ctx| {
-                            pane_group.pane_by_index(0).map(|pane| {
-                                pane.pane_configuration().as_ref(ctx).title().to_owned()
-                            })
-                        });
-
-                        if let Some(title) = title
-                            && config_regex.is_match(&title)
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    async_assert!(found, "Expected a tab with config.json opened")
-                }),
+            TestStep::new("Directory context menu omits new tab")
+                .with_right_click_on_saved_position("file_tree_item:folder")
+                .add_named_assertion(
+                    "Directory has new-file but not new-tab action",
+                    |app, window_id| {
+                        let presenter = app.presenter(window_id).expect("window presenter");
+                        let presenter = presenter.borrow();
+                        let positions = presenter.position_cache();
+                        async_assert!(
+                            positions.get_position("New file").is_some()
+                                && positions.get_position("Open in new tab").is_none(),
+                            "Directory context menu should retain new file but omit new tab"
+                        )
+                    },
+                ),
         )
 }
 

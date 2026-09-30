@@ -348,7 +348,11 @@ integration_tests! {
 
     test_file_tree_opens_files_in_warp,
     test_file_tree_open_in_new_pane,
-    test_file_tree_open_in_new_tab,
+    test_file_tree_omits_open_in_new_tab,
+    test_file_tree_directory_omits_open_in_new_tab,
+    test_file_tree_double_click_preserves_single_preview,
+    test_file_tree_persistent_tabs_keep_order_and_evict_preview,
+    test_file_tree_double_click_promotes_inactive_preview,
     test_file_tree_keyboard_navigation,
     test_file_tree_non_openable_files,
     test_file_tree_nested_file_opening,

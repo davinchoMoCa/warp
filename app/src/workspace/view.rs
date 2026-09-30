@@ -6718,10 +6718,18 @@ impl Workspace {
                 location,
                 target,
                 line_col,
+                file_tree_double_click,
             } => {
                 let code_source = CodeSource::FileTree {
                     location: location.clone(),
                 };
+                #[cfg(feature = "local_fs")]
+                if let (Some(double_click), FileTarget::CodeEditor(layout)) =
+                    (file_tree_double_click, target)
+                {
+                    self.open_code_from_file_tree(code_source, *layout, *double_click, ctx);
+                    return;
+                }
                 match location {
                     LocalOrRemotePath::Local(path) => {
                         self.open_file_with_target(
@@ -8950,6 +8958,58 @@ impl Workspace {
             None,
             ctx,
         );
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn open_code_from_file_tree(
+        &mut self,
+        source: CodeSource,
+        layout: EditorLayout,
+        double_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let grouping_on = FeatureFlag::TabbedEditorView.is_enabled()
+            && *EditorSettings::as_ref(ctx)
+                .prefer_tabbed_editor_view
+                .value();
+        if grouping_on {
+            let pane_group = self.active_tab_pane_group();
+            let existing = pane_group
+                .as_ref(ctx)
+                .code_panes(ctx)
+                .find(|(pane_id, _)| !pane_group.as_ref(ctx).is_pane_hidden_for_close(*pane_id));
+            if let (Some(location), Some((pane_id, code_view))) = (source.location(), existing) {
+                send_telemetry_from_ctx!(
+                    TelemetryEvent::CodePaneOpened {
+                        source,
+                        layout,
+                        preview: !double_click,
+                    },
+                    ctx
+                );
+                code_view.update(ctx, |view, ctx| {
+                    view.open_from_file_tree(location, double_click, ctx);
+                });
+                self.active_tab_pane_group().update(ctx, |group, ctx| {
+                    group.focus_pane(pane_id, double_click, ctx);
+                });
+                return;
+            }
+        }
+        self.open_code(source, layout, None, grouping_on && !double_click, &[], ctx);
+        if grouping_on && !double_click {
+            let pane_group = self.active_tab_pane_group();
+            let pane_id = pane_group
+                .as_ref(ctx)
+                .code_panes(ctx)
+                .find(|(pane_id, _)| !pane_group.as_ref(ctx).is_pane_hidden_for_close(*pane_id))
+                .map(|(pane_id, _)| pane_id);
+            if let Some(pane_id) = pane_id {
+                pane_group.update(ctx, |group, ctx| {
+                    group.focus_pane(pane_id, false, ctx);
+                });
+            }
+        }
     }
 
     #[cfg(feature = "local_fs")]

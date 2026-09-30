@@ -135,6 +135,7 @@ pub enum LeftPanelEvent {
         location: LocalOrRemotePath,
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
+        file_tree_double_click: Option<bool>,
     },
     NewConversationInNewTab,
     ShowDeleteConfirmationDialog {
@@ -937,6 +938,7 @@ impl LeftPanelView {
                     location: location.clone(),
                     target,
                     line_col: Some(line_col),
+                    file_tree_double_click: None,
                 });
             }
         }
@@ -965,22 +967,19 @@ impl LeftPanelView {
                 path,
                 target,
                 line_col,
+                double_click,
             } => {
                 ctx.emit(LeftPanelEvent::OpenFileWithTarget {
                     location: path.clone(),
                     target: target.clone(),
                     line_col: *line_col,
+                    file_tree_double_click: *double_click,
                 });
             }
             FileTreeEvent::CDToDirectory { path } => {
                 ctx.emit(LeftPanelEvent::FileTree(pane_group::Event::CDToDirectory {
                     path: path.clone(),
                 }));
-            }
-            FileTreeEvent::OpenDirectoryInNewTab { path } => {
-                ctx.emit(LeftPanelEvent::FileTree(
-                    pane_group::Event::OpenDirectoryInNewTab { path: path.clone() },
-                ));
             }
         }
     }

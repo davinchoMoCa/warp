@@ -237,6 +237,7 @@ impl TabData {
 pub struct CodeView {
     tab_group: Vec<TabData>,
     active_tab_index: usize,
+    pending_preview_replacement: Option<(LocalOrRemotePath, TabData)>,
     pane_configuration: ModelHandle<PaneConfiguration>,
     focus_handle: Option<PaneFocusHandle>,
     source: CodeSource,
@@ -253,6 +254,7 @@ impl CodeView {
         Self {
             tab_group: Default::default(),
             active_tab_index: 0,
+            pending_preview_replacement: None,
             pane_configuration,
             focus_handle: None,
             source,
@@ -337,17 +339,17 @@ impl CodeView {
     /// Create a new "preview" code view for when a user is exploring the file tree.
     /// There is only one preview active at a time
     pub fn new_preview(source: CodeSource, ctx: &mut ViewContext<Self>) -> Self {
-        let path = source.path();
+        let location = source.location();
         let mut view = Self::new_internal(source, ctx);
 
-        if let Some(path) = path {
-            view.open_in_preview_or_promote(path, ctx);
+        if let Some(location) = location {
+            view.open_from_file_tree(location, false, ctx);
             #[cfg(feature = "local_fs")]
             {
                 view.update_markdown_mode_segmented_control(ctx);
             }
         } else {
-            log::warn!("Preview CodeView constructed with no path");
+            log::warn!("Preview CodeView constructed with no location");
         }
         view
     }
@@ -676,6 +678,7 @@ impl CodeView {
     /// Open a local file as a "preview" or if it's already being previewed, promote it to "open", making it
     /// active and editable.
     pub fn open_in_preview_or_promote(&mut self, path: PathBuf, ctx: &mut ViewContext<Self>) {
+        self.pending_preview_replacement = None;
         // If the file already is open, set the active tab to the existing tab and return.
         if let Some(existing_index) = self
             .tab_group
@@ -732,6 +735,7 @@ impl CodeView {
         line_col: Option<LineAndColumnArg>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.pending_preview_replacement = None;
         // If the tab already exists, focus it (and optionally jump) without re-opening from disk.
         if let Some(existing_index) = self.focus_existing_tab_if_present(location.as_ref(), ctx) {
             if let Some(line_col) = line_col {
@@ -741,6 +745,87 @@ impl CodeView {
         }
 
         self.open_new_tab(location, line_col, ctx);
+    }
+    /// Opens a file selected in the project explorer as a preview or persistent tab.
+    pub fn open_from_file_tree(
+        &mut self,
+        location: LocalOrRemotePath,
+        double_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // The first mouse-up of a double-click is a normal click, so keep the displaced
+        // single preview until the second mouse-up can restore it.
+        let pending = self.pending_preview_replacement.take();
+        if double_click
+            && let Some((pending_location, previous_tab)) = pending
+            && pending_location == location
+            && self.tab_group.len() == 1
+            && self.tab_group[0].preview
+            && self.tab_group[0].location.as_ref() == Some(&location)
+        {
+            self.tab_group.insert(0, previous_tab);
+            self.tab_group[1].preview = false;
+            self.set_active_tab_index(1, ctx);
+            return;
+        }
+
+        if let Some(index) = self
+            .tab_group
+            .iter()
+            .position(|tab| tab.location.as_ref() == Some(&location))
+        {
+            if index != self.active_tab_index {
+                self.set_active_tab_index(index, ctx);
+            }
+            if double_click {
+                self.promote_if_preview(ctx);
+            }
+            return;
+        }
+
+        let active_preview = self
+            .tab_at(self.active_tab_index)
+            .is_some_and(|tab| tab.preview);
+        if active_preview && !Self::has_unsaved_changes(&self.tab_group[self.active_tab_index], ctx)
+        {
+            let index = self.active_tab_index;
+            let new_tab = self.build_tab_data(Some(location.clone()), !double_click, ctx);
+            let previous = std::mem::replace(&mut self.tab_group[index], new_tab);
+            self.set_active_tab_index(index, ctx);
+            if !double_click && self.tab_group.len() == 1 {
+                self.pending_preview_replacement = Some((location.clone(), previous));
+            }
+        } else {
+            if active_preview {
+                self.tab_group[self.active_tab_index].preview = false;
+            }
+            if let Some(preview_index) = self.tab_group.iter().position(|tab| tab.preview) {
+                if Self::has_unsaved_changes(&self.tab_group[preview_index], ctx) {
+                    self.tab_group[preview_index].preview = false;
+                } else {
+                    self.tab_group.remove(preview_index);
+                    if preview_index < self.active_tab_index {
+                        self.active_tab_index -= 1;
+                    }
+                }
+            }
+            let index = if self.tab_group.is_empty() {
+                0
+            } else {
+                self.active_tab_index + 1
+            };
+            let tab = self.build_tab_data(Some(location.clone()), !double_click, ctx);
+            self.tab_group.insert(index, tab);
+            self.set_active_tab_index(index, ctx);
+        }
+
+        ctx.emit(CodeViewEvent::FileOpened {
+            location,
+            tab_index: self.active_tab_index,
+        });
+        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+            model.remove_deallocated_buffers(ctx);
+        });
     }
 
     fn focus_existing_tab_if_present(
@@ -1073,6 +1158,7 @@ impl CodeView {
     }
 
     pub fn cleanup_all_tabs(&mut self, ctx: &mut ViewContext<Self>) {
+        self.pending_preview_replacement = None;
         self.tab_group.clear();
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_deallocated_buffers(ctx);
@@ -1295,6 +1381,7 @@ impl CodeView {
     }
 
     fn remove_tab_data_index(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        self.pending_preview_replacement = None;
         self.tab_group.remove(index);
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_deallocated_buffers(ctx);
@@ -1397,6 +1484,7 @@ impl CodeView {
     }
 
     pub fn set_active_tab_index(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        self.pending_preview_replacement = None;
         self.active_tab_index = index;
         self.update_tab_bar_state(ctx);
 

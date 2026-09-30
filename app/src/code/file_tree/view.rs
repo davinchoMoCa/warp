@@ -91,6 +91,9 @@ pub enum FileTreeAction {
     ItemClicked {
         id: FileTreeIdentifier,
     },
+    ItemDoubleClicked {
+        id: FileTreeIdentifier,
+    },
     SelectPreviousItem,
     SelectNextItem,
     Expand,
@@ -122,9 +125,6 @@ pub enum FileTreeAction {
         id: FileTreeIdentifier,
     },
     OpenInNewPane {
-        id: FileTreeIdentifier,
-    },
-    OpenInNewTab {
         id: FileTreeIdentifier,
     },
     CDToDirectory {
@@ -2002,6 +2002,7 @@ impl FileTreeView {
 
         let editor_view = is_pending_edit.then_some(&self.editor_view);
         let id_for_click = id.clone();
+        let id_for_double_click = id.clone();
         let id_for_context = id.clone();
         let id_for_drop = id.clone();
         let id_for_drag = id.clone();
@@ -2022,6 +2023,11 @@ impl FileTreeView {
                 });
             },
         )
+        .on_double_click(move |event_ctx, _app_ctx, _position| {
+            event_ctx.dispatch_typed_action(FileTreeAction::ItemDoubleClicked {
+                id: id_for_double_click.clone(),
+            });
+        })
         .on_right_click(
             move |event: &mut EventContext, _app_ctx: &AppContext, position| {
                 let Some(parent_bounds) = event.element_position_by_id(&position_id) else {
@@ -2201,6 +2207,7 @@ impl FileTreeView {
         &self,
         _path: &Path,
         _editor_layout: Option<EditorLayout>,
+        _double_click: Option<bool>,
         _ctx: &mut ViewContext<Self>,
     ) {
     }
@@ -2210,6 +2217,7 @@ impl FileTreeView {
         &self,
         path: &Path,
         editor_layout: Option<EditorLayout>,
+        double_click: Option<bool>,
         ctx: &mut ViewContext<Self>,
     ) {
         let settings = EditorSettings::as_ref(ctx);
@@ -2237,12 +2245,14 @@ impl FileTreeView {
             path: LocalOrRemotePath::Local(path.to_path_buf()),
             target,
             line_col: None,
+            double_click,
         });
     }
 
     fn select_and_execute_item_at_id(
         &mut self,
         id: &FileTreeIdentifier,
+        double_click: Option<bool>,
         ctx: &mut ViewContext<Self>,
     ) {
         let Some(root_dir) = self.root_directories.get(&id.root) else {
@@ -2290,16 +2300,19 @@ impl FileTreeView {
                             path: LocalOrRemotePath::Remote(remote_path),
                             target,
                             line_col: None,
+                            double_click,
                         });
                     }
                 } else {
                     let path = metadata.path.to_local_path_lossy();
-                    self.open_file(&path, None, ctx);
+                    self.open_file(&path, None, double_click, ctx);
                 }
             }
             FileTreeItem::DirectoryHeader { directory, .. } => {
-                let dir_std = (*directory.path).clone();
-                self.toggle_folder_expansion(&id.root, &dir_std, ctx);
+                if double_click != Some(true) {
+                    let dir_std = (*directory.path).clone();
+                    self.toggle_folder_expansion(&id.root, &dir_std, ctx);
+                }
             }
         }
 
@@ -2343,18 +2356,13 @@ impl FileTreeView {
                 FileTreeItem::File { .. } => {
                     let path_local = item.path().to_local_path_lossy();
                     if !is_file_content_binary(&path_local) {
-                        items.extend([
+                        items.push(
                             MenuItemFields::new("Open in new pane")
                                 .with_on_select_action(FileTreeAction::OpenInNewPane {
                                     id: id.clone(),
                                 })
                                 .into_item(),
-                            MenuItemFields::new("Open in new tab")
-                                .with_on_select_action(FileTreeAction::OpenInNewTab {
-                                    id: id.clone(),
-                                })
-                                .into_item(),
-                        ]);
+                        );
                     } else {
                         items.push(
                             MenuItemFields::new("Open file")
@@ -2383,11 +2391,6 @@ impl FileTreeView {
                                 .into_item(),
                         );
                     }
-                    items.push(
-                        MenuItemFields::new("Open in new tab")
-                            .with_on_select_action(FileTreeAction::OpenInNewTab { id: id.clone() })
-                            .into_item(),
-                    );
                 }
             };
 
@@ -2513,24 +2516,9 @@ impl FileTreeView {
         self.open_file(
             &item.path().to_local_path_lossy(),
             Some(EditorLayout::SplitPane),
+            None,
             ctx,
         );
-    }
-
-    fn open_in_new_tab(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
-        let Some(root_dir) = self.root_directories.get(&id.root) else {
-            return;
-        };
-        let Some(item) = root_dir.items.get(id.index) else {
-            return;
-        };
-
-        let path = item.path().to_local_path_lossy();
-        if path.is_dir() {
-            ctx.emit(FileTreeEvent::OpenDirectoryInNewTab { path: path.clone() });
-        } else {
-            self.open_file(&path, Some(EditorLayout::NewTab), ctx);
-        }
     }
 
     fn cd_to_directory(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
@@ -2919,6 +2907,7 @@ pub enum FileTreeEvent {
         path: LocalOrRemotePath,
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
+        double_click: Option<bool>,
     },
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     FileRenamed {
@@ -2929,8 +2918,6 @@ pub enum FileTreeEvent {
     FileDeleted { path: PathBuf },
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     CDToDirectory { path: PathBuf },
-    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
-    OpenDirectoryInNewTab { path: PathBuf },
 }
 
 impl Entity for FileTreeView {
@@ -3002,7 +2989,12 @@ impl TypedActionView for FileTreeView {
         match action {
             FileTreeAction::ItemClicked { id } => {
                 ctx.focus_self();
-                self.select_and_execute_item_at_id(id, ctx);
+                self.select_and_execute_item_at_id(id, Some(false), ctx);
+                ctx.notify();
+            }
+            FileTreeAction::ItemDoubleClicked { id } => {
+                ctx.focus_self();
+                self.select_and_execute_item_at_id(id, Some(true), ctx);
                 ctx.notify();
             }
             FileTreeAction::SelectPreviousItem => {
@@ -3064,7 +3056,7 @@ impl TypedActionView for FileTreeView {
             }
             FileTreeAction::ExecuteSelectedItem => {
                 if let Some(id) = self.selected_item.clone() {
-                    self.select_and_execute_item_at_id(&id, ctx);
+                    self.select_and_execute_item_at_id(&id, None, ctx);
                 }
             }
             FileTreeAction::OpenContextMenu { position, id } => {
@@ -3105,11 +3097,6 @@ impl TypedActionView for FileTreeView {
             FileTreeAction::OpenInNewPane { id } => {
                 if !self.is_remote_item(id) {
                     self.open_in_new_pane(id, ctx);
-                }
-            }
-            FileTreeAction::OpenInNewTab { id } => {
-                if !self.is_remote_item(id) {
-                    self.open_in_new_tab(id, ctx);
                 }
             }
             FileTreeAction::CDToDirectory { id } => {

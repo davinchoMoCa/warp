@@ -482,7 +482,11 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     // File tree tests
     register_test!(test_file_tree_opens_files_in_warp);
     register_test!(test_file_tree_open_in_new_pane);
-    register_test!(test_file_tree_open_in_new_tab);
+    register_test!(test_file_tree_omits_open_in_new_tab);
+    register_test!(test_file_tree_directory_omits_open_in_new_tab);
+    register_test!(test_file_tree_double_click_preserves_single_preview);
+    register_test!(test_file_tree_persistent_tabs_keep_order_and_evict_preview);
+    register_test!(test_file_tree_double_click_promotes_inactive_preview);
     register_test!(test_file_tree_keyboard_navigation);
     register_test!(test_file_tree_non_openable_files);
     register_test!(test_file_tree_nested_file_opening);
