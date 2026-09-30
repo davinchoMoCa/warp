@@ -23,6 +23,7 @@ use crate::features::FeatureFlag;
 use crate::server::ids::{ServerId, SyncId};
 use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::ai::{ForkConversationResponse, MockAIClient, SpawnAgentResponse};
+use crate::server::server_api::factory::MockFactoryClient;
 use crate::test_util::add_window_with_terminal;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 use crate::workspaces::user_workspaces::TeamContextForOperation;
@@ -32,6 +33,13 @@ fn task_id() -> AmbientAgentTaskId {
         .parse()
         .expect("valid task id")
 }
+
+fn factory_client() -> Arc<dyn FactoryClient> {
+    let mut client = MockFactoryClient::new();
+    client.expect_has_factory_access().returning(|| Ok(false));
+    Arc::new(client)
+}
+
 fn exchange_with_working_directory(
     working_directory: &str,
     output_status: AIAgentOutputStatus,
@@ -821,6 +829,7 @@ async fn fork_materialization_precedes_exactly_one_spawn() {
             "",
         ),
         client,
+        factory_client(),
         None,
         Some(materialize),
     )
@@ -889,6 +898,7 @@ async fn fresh_launch_skips_fork_and_materializes_before_spawn() {
     let outcome = execute_validated_handoff(
         pending(client.clone(), None, false, "new task"),
         client,
+        factory_client(),
         None,
         Some(materialize),
     )
@@ -919,6 +929,7 @@ async fn cancellation_after_materialization_stops_before_spawn() {
     let outcome = execute_validated_handoff(
         pending(client.clone(), None, false, "new task"),
         client,
+        factory_client(),
         None,
         Some(materialize),
     )
@@ -965,6 +976,7 @@ async fn cancellation_during_spawn_cancels_the_created_task() {
     let outcome = execute_validated_handoff(
         pending(client.clone(), None, false, "new task"),
         client,
+        factory_client(),
         None,
         Some(materialize),
     )
@@ -1002,7 +1014,7 @@ async fn snapshot_failure_degrades_to_spawn_without_token() {
     let mut pending = pending(client.clone(), None, false, "continue");
     pending.source_paths = vec![path];
 
-    let outcome = execute_validated_handoff(pending, client, None, None).await;
+    let outcome = execute_validated_handoff(pending, client, factory_client(), None, None).await;
     let HandoffCommitOutcome::Created(created) = outcome else {
         panic!("snapshot failure should not fail the handoff");
     };
@@ -1023,6 +1035,7 @@ async fn caller_cancellation_stops_before_spawn() {
     let outcome = execute_validated_handoff(
         pending(client.clone(), None, false, "new task"),
         client,
+        factory_client(),
         Some(cancellation),
         None,
     )

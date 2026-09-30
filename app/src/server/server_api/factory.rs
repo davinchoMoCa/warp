@@ -16,6 +16,12 @@ use warp_graphql::queries::get_runners::{
 use super::ServerApi;
 use crate::server::graphql::{get_request_context, get_user_facing_error_message};
 use crate::server::team_scope::RequestTeamScope;
+use crate::workspaces::user_workspaces::HeadlessTeamScope;
+
+#[derive(serde::Deserialize)]
+struct FactoryAccessResponse {
+    allowed: bool,
+}
 
 /// The result of upserting a runner: the resulting [`Runner`] plus whether the
 /// operation updated an existing runner (vs. creating a new one).
@@ -27,11 +33,14 @@ pub struct UpsertedRunner {
     pub is_update: bool,
 }
 
-/// Client for the Factory GraphQL surface (runner CRUD).
+/// Client for Factory access and runner CRUD.
 #[cfg_attr(test, automock)]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 pub trait FactoryClient: 'static + Send + Sync {
+    /// Whether the authenticated principal may open Factory run pages.
+    async fn has_factory_access(&self) -> Result<bool>;
+
     /// Fetch all runners visible to the caller, optionally sorted.
     async fn get_runners(
         &self,
@@ -56,6 +65,16 @@ pub trait FactoryClient: 'static + Send + Sync {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl FactoryClient for ServerApi {
+    async fn has_factory_access(&self) -> Result<bool> {
+        let response: FactoryAccessResponse = self
+            .get_public_api_for_team(
+                "factory/access",
+                RequestTeamScope::from_scope(&HeadlessTeamScope::Personal),
+            )
+            .await?;
+        Ok(response.allowed)
+    }
+
     async fn get_runners(
         &self,
         sort_by: Option<RunnerSortBy>,

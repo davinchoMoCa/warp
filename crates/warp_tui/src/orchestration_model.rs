@@ -25,11 +25,11 @@ use warp::tui_export::{
     StartAgentExecutionMode, StartAgentRequest, TEAM_CHANGED_DURING_CHILD_LAUNCH_ERROR,
     TeamContextForOperation, UserWorkspaces, aggregated_orchestrator_status,
     apply_child_agent_model_override, child_conversations_in_pill_order,
-    classify_cloud_agent_startup_error, descendant_conversation_ids_in_spawn_order,
-    descendant_conversations_in_pill_order, finish_local_oz_child_conversation,
+    classify_cloud_agent_startup_error, cloud_run_url, descendant_conversation_ids_in_spawn_order,
+    descendant_conversations_in_pill_order, finish_local_oz_child_conversation, has_factory_access,
     inherit_child_agent_settings, loaded_subtree_rollup, orchestration_root_conversation_id,
-    oz_run_url, prepare_local_oz_child_launch, prepare_remote_child_launch,
-    register_agent_event_consumer, unregister_agent_event_consumer,
+    prepare_local_oz_child_launch, prepare_remote_child_launch, register_agent_event_consumer,
+    unregister_agent_event_consumer,
 };
 use warp_core::features::FeatureFlag;
 use warpui::SingletonEntity;
@@ -624,16 +624,23 @@ impl TuiOrchestrationModel {
         } = child;
         let surface_id = session_id.surface_id();
         let ai_client = ServerApiProvider::as_ref(ctx).get_ai_client();
+        let factory_client = ServerApiProvider::as_ref(ctx).get_factory_client();
         let cloud_run_state_for_launch = cloud_run_state.clone();
         ctx.spawn(
-            async move { ai_client.spawn_agent(spawn_request, team_scope).await },
-            move |me, result, ctx| {
+            async move {
+                futures::join!(
+                    ai_client.spawn_agent(spawn_request, team_scope),
+                    has_factory_access(factory_client.as_ref())
+                )
+            },
+            move |me, (result, factory_access), ctx| {
                 let result = result.map_err(|error| classify_cloud_agent_startup_error(&error));
                 me.finish_remote_child_launch(
                     conversation_id,
                     surface_id,
                     cloud_run_state_for_launch,
                     result,
+                    factory_access,
                     ctx,
                 );
             },
@@ -677,11 +684,12 @@ impl TuiOrchestrationModel {
         child_surface_id: EntityId,
         cloud_run_state: ModelHandle<TuiCloudRunState>,
         result: Result<warp::tui_export::SpawnAgentResponse, CloudAgentStartupIssue>,
+        factory_access: bool,
         ctx: &mut ModelContext<Self>,
     ) {
         match result {
             Ok(response) => {
-                let run_url = oz_run_url(&response.run_id);
+                let run_url = cloud_run_url(&response.run_id, factory_access);
                 cloud_run_state.update(ctx, |state, ctx| {
                     state.set_spawned(response.task_id, response.run_id.clone(), run_url, ctx);
                 });

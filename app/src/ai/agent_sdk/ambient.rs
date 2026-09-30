@@ -38,6 +38,7 @@ use crate::ai::ambient_agents::{
     AgentConfigSnapshot, AmbientAgentTask, AmbientAgentTaskId, AmbientAgentTaskState,
 };
 use crate::ai::artifacts::Artifact;
+use crate::ai::orchestration::{cloud_run_url, has_factory_access};
 use crate::auth::AuthStateProvider;
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::server::ids::{ServerId, SyncId};
@@ -590,10 +591,11 @@ impl AmbientAgentRunner {
             };
 
             let should_open = args.open;
-            let oz_root_url = ChannelState::oz_root_url();
+            let factory_client = ServerApiProvider::as_ref(ctx).get_factory_client();
             let ai_client_clone = ai_client.clone();
             let request_team_scope = RequestTeamScope::from_scope(&team_scope);
             let spawn_future = async move {
+                let factory_access = has_factory_access(factory_client.as_ref()).await;
                 let mut stream = Box::pin(spawn_task(
                     request,
                     request_team_scope,
@@ -608,7 +610,10 @@ impl AmbientAgentRunner {
                         Ok(event) => match event {
                             AmbientAgentEvent::TaskSpawned { task_id, .. } => {
                                 println!("Spawned ambient agent with run ID: {task_id}");
-                                println!("View run: {oz_root_url}/runs/{task_id}");
+                                println!(
+                                    "View run: {}",
+                                    cloud_run_url(&task_id.to_string(), factory_access)
+                                );
                                 spawned_task_id = Some(task_id);
                             }
                             AmbientAgentEvent::AtCapacity => {
