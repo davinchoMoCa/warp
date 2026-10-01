@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use event::{CLIAgentEvent, CLIAgentEventSource, CLIAgentEventType};
+use warp_core::execution_mode::AppExecutionMode;
 use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
@@ -18,6 +19,8 @@ use crate::ai::blocklist::InputConfig;
 /// CLI agent session's PTY, for further plugin activity before concluding the
 /// interrupt silently cancelled the session. See `observe_ctrl_c_write`.
 pub const CTRL_C_CANCEL_WINDOW: Duration = Duration::from_secs(2);
+
+const NEEDS_INPUT_STATUS_MESSAGE: &str = "Agent requires user input";
 
 /// Status of a tracked CLI agent session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +67,8 @@ pub struct CLIAgentSessionContext {
     pub summary: Option<String>,
     pub query: Option<String>,
     pub response: Option<String>,
+    /// Whether the latest status change was a `NeedsInput` event.
+    pub blocked_on_needs_input: bool,
 }
 
 /// State of the rich input editor for composing a prompt to send to a CLI agent.
@@ -181,6 +186,13 @@ impl CLIAgentSession {
         self.received_rich_notification
     }
 
+    /// Whether the session is waiting on input the agent could not describe, so nothing
+    /// should be typed into its terminal.
+    pub fn is_blocked_on_needs_input(&self) -> bool {
+        matches!(self.status, CLIAgentSessionStatus::Blocked { .. })
+            && self.session_context.blocked_on_needs_input
+    }
+
     /// Clears state populated by `PermissionRequest`. Called whenever the
     /// session leaves the permission flow (the user replied, a blocking tool
     /// completed, a new prompt is submitted, or the session ends successfully)
@@ -250,6 +262,11 @@ impl CLIAgentSession {
                     .clone()
                     .or_else(|| Some("Waiting for your answer".to_owned())),
             },
+            // The notification text is deliberately dropped: it can contain arbitrary dialog
+            // content and becomes the task status message reported to the server.
+            CLIAgentEventType::NeedsInput => CLIAgentSessionStatus::Blocked {
+                message: Some(NEEDS_INPUT_STATUS_MESSAGE.to_owned()),
+            },
             CLIAgentEventType::PermissionReplied => {
                 if !matches!(self.status, CLIAgentSessionStatus::Blocked { .. }) {
                     return None;
@@ -267,6 +284,8 @@ impl CLIAgentSession {
             CLIAgentEventType::Unknown(_) => return None,
         };
 
+        self.session_context.blocked_on_needs_input =
+            matches!(event.event, CLIAgentEventType::NeedsInput);
         self.status = new_status.clone();
         Some(new_status)
     }
@@ -511,7 +530,16 @@ impl CLIAgentSessionsModel {
         }
 
         let event_type = &event.event;
-        if let Some(new_status) = session.apply_event(event) {
+        // Interactive clients keep ignoring this event: only an unattended run has no one to
+        // answer the prompt.
+        let new_status = if matches!(event.event, CLIAgentEventType::NeedsInput)
+            && !AppExecutionMode::as_ref(ctx).is_autonomous()
+        {
+            None
+        } else {
+            session.apply_event(event)
+        };
+        if let Some(new_status) = new_status {
             let agent = session.agent;
             ctx.emit(CLIAgentSessionsModelEvent::StatusChanged {
                 terminal_view_id,

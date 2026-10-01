@@ -20,6 +20,8 @@ pub enum CLIAgentEventType {
     PermissionRequest,
     PermissionReplied,
     QuestionAsked,
+    /// The agent cannot continue until a person responds.
+    NeedsInput,
     IdlePrompt,
     Unknown(String),
 }
