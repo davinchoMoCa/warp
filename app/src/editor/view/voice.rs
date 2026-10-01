@@ -127,9 +127,11 @@ impl EditorView {
         options: VoiceTranscriptionOptions,
         ctx: &mut ViewContext<Self>,
     ) {
-        if !UserWorkspaces::handle(ctx).as_ref(ctx).is_voice_enabled() {
-            return;
-        }
+        let options = if UserWorkspaces::handle(ctx).as_ref(ctx).is_voice_enabled() {
+            options
+        } else {
+            VoiceTranscriptionOptions::Disabled
+        };
         if self.voice_transcription_options == options {
             return;
         }
@@ -137,9 +139,16 @@ impl EditorView {
         log::debug!("update_voice_transcription_options: {options:?}");
         self.voice_transcription_options = options;
         if !self.voice_transcription_options.is_enabled() {
-            self.stop_voice_input(true, ctx);
+            self.stop_transcribing_voice_input(ctx);
         }
         ctx.notify();
+    }
+
+    #[cfg(test)]
+    pub(super) fn start_listening_lifecycle_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        let mut state = VoiceInputState::default();
+        assert!(state.lifecycle.start());
+        self.set_voice_input_state(state, ctx);
     }
 
     pub(super) fn voice_options(ctx: &mut ViewContext<Self>) -> VoiceTranscriptionOptions {

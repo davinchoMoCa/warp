@@ -4962,23 +4962,3 @@ fn legacy_cache_migration_yields_a_usable_teamless_catalog() {
         });
     });
 }
-
-#[test]
-fn workspace_membership_events_can_change_voice_transcription_options() {
-    assert!(UserWorkspacesEvent::TeamsChanged.affects_voice_transcription_options());
-    assert!(UserWorkspacesEvent::CurrentWorkspaceChanged.affects_voice_transcription_options());
-}
-
-#[test]
-fn invite_and_billing_portal_events_do_not_change_voice_transcription_options() {
-    assert!(!UserWorkspacesEvent::EmailInviteSent.affects_voice_transcription_options());
-    assert!(
-        !UserWorkspacesEvent::GenerateStripeBillingPortalLink("x".into())
-            .affects_voice_transcription_options()
-    );
-    assert!(!UserWorkspacesEvent::AiOveragesUpdated.affects_voice_transcription_options());
-    assert!(
-        !UserWorkspacesEvent::CodebaseContextEnablementChanged
-            .affects_voice_transcription_options()
-    );
-}

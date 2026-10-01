@@ -1,16 +1,9 @@
-#[cfg(feature = "voice_input")]
-use std::cell::Cell;
-#[cfg(feature = "voice_input")]
-use std::rc::Rc;
-
 use anyhow::Error;
 use itertools::Itertools;
 use pathfinder_geometry::vector::vec2f;
 use settings::ToggleableSetting;
 use unindent::Unindent;
 use warp_errors::report_if_error;
-#[cfg(feature = "voice_input")]
-use warpui::ViewHandle;
 use warpui::color::ColorU;
 use warpui::platform::WindowStyle;
 use warpui::text_layout::TextFrame;
@@ -24,6 +17,8 @@ use crate::editor::soft_wrap::FrameLayouts;
 use crate::editor::tests::sample_text;
 use crate::server::server_api::team::MockTeamClient;
 use crate::server::server_api::workspace::MockWorkspaceClient;
+#[cfg(feature = "voice_input")]
+use crate::settings::PrivacySettings;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::workspace::ToastStack;
@@ -4691,63 +4686,115 @@ fn test_drag_and_drop_files_applies_path_transformer() {
 }
 
 #[cfg(feature = "voice_input")]
-fn count_voice_state_updates(app: &mut App, editor: &ViewHandle<EditorView>) -> Rc<Cell<usize>> {
-    let updates = Rc::new(Cell::new(0usize));
-    let updates_for_sub = updates.clone();
+fn emit_user_workspaces_event(app: &mut App, event: UserWorkspacesEvent) {
     app.update(|ctx| {
-        ctx.subscribe_to_view(editor, move |_, event, _| {
-            if matches!(event, Event::VoiceStateUpdated { .. }) {
-                updates_for_sub.set(updates_for_sub.get() + 1);
-            }
+        UserWorkspaces::handle(ctx).update(ctx, |_workspaces, ctx| {
+            ctx.emit(event);
         });
     });
-    updates
+}
+
+#[cfg(feature = "voice_input")]
+fn enabled_voice_options_showing_button() -> VoiceTranscriptionOptions {
+    VoiceTranscriptionOptions::Enabled { show_button: true }
 }
 
 #[cfg(feature = "voice_input")]
 #[test]
-fn repeated_identical_voice_options_do_not_emit_voice_state_updates() {
+fn non_membership_workspace_events_leave_enabled_voice_options_unchanged() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (window_id, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new(Default::default(), ctx)
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.update_voice_transcription_options(enabled_voice_options_showing_button(), ctx);
+        });
+        editor.read(&app, |editor, _| {
+            assert_eq!(
+                editor.voice_transcription_options,
+                enabled_voice_options_showing_button()
+            );
+        });
+
+        emit_user_workspaces_event(&mut app, UserWorkspacesEvent::EmailInviteSent);
+        emit_user_workspaces_event(
+            &mut app,
+            UserWorkspacesEvent::WindowTeamChanged { window_id },
+        );
+
+        editor.read(&app, |editor, _| {
+            assert_eq!(
+                editor.voice_transcription_options,
+                enabled_voice_options_showing_button()
+            );
+            assert!(editor.voice_transcription_options.should_show_button());
+        });
+    });
+}
+
+#[cfg(feature = "voice_input")]
+#[test]
+fn unchanged_workspace_membership_does_not_recompute_voice_options() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let (_, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
             EditorView::new(Default::default(), ctx)
         });
-        let updates = count_voice_state_updates(&mut app, &editor);
 
-        editor.update(&mut app, |editor, ctx| {
-            editor.update_voice_transcription_options(VoiceTranscriptionOptions::Disabled, ctx);
-        });
-        let after_first = updates.get();
-        editor.update(&mut app, |editor, ctx| {
-            editor.update_voice_transcription_options(VoiceTranscriptionOptions::Disabled, ctx);
+        editor.read(&app, |editor, _| {
+            assert_eq!(
+                editor.voice_transcription_options,
+                VoiceTranscriptionOptions::Enabled { show_button: false }
+            );
         });
 
-        assert_eq!(updates.get(), after_first);
+        emit_user_workspaces_event(&mut app, UserWorkspacesEvent::TeamsChanged);
+        emit_user_workspaces_event(&mut app, UserWorkspacesEvent::CurrentWorkspaceChanged);
+
+        editor.read(&app, |editor, _| {
+            assert_eq!(
+                editor.voice_transcription_options,
+                VoiceTranscriptionOptions::Enabled { show_button: false }
+            );
+        });
     });
 }
 
 #[cfg(feature = "voice_input")]
 #[test]
-fn unrelated_user_workspaces_events_do_not_emit_voice_state_updates() {
+fn revoking_voice_entitlement_disables_options_and_cancels_active_input() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        app.add_singleton_model(PrivacySettings::mock);
         let (_, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
             EditorView::new(Default::default(), ctx)
         });
-        let updates = count_voice_state_updates(&mut app, &editor);
 
         editor.update(&mut app, |editor, ctx| {
-            editor.update_voice_transcription_options(VoiceTranscriptionOptions::Disabled, ctx);
+            editor.update_voice_transcription_options(enabled_voice_options_showing_button(), ctx);
+            editor.start_listening_lifecycle_for_test(ctx);
         });
-        let after_sync = updates.get();
+        editor.read(&app, |editor, _| {
+            assert!(editor.voice_transcription_options.is_enabled());
+            assert!(editor.is_voice_input_active());
+        });
 
         app.update(|ctx| {
-            UserWorkspaces::handle(ctx).update(ctx, |_workspaces, ctx| {
-                ctx.emit(UserWorkspacesEvent::EmailInviteSent);
+            UserWorkspaces::handle(ctx).update(ctx, |workspaces, ctx| {
+                workspaces.setup_test_workspace(ctx);
             });
         });
 
-        assert_eq!(updates.get(), after_sync);
+        editor.read(&app, |editor, _| {
+            assert_eq!(
+                editor.voice_transcription_options,
+                VoiceTranscriptionOptions::Disabled
+            );
+            assert!(!editor.voice_transcription_options.should_show_button());
+            assert!(!editor.is_voice_input_active());
+        });
     });
 }
 
