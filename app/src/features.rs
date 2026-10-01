@@ -431,10 +431,6 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ConversationsAsContext,
         #[cfg(feature = "incremental_auto_reload")]
         FeatureFlag::IncrementalAutoReload,
-        #[cfg(feature = "wait_for_events_parent_registration")]
-        FeatureFlag::WaitForEventsParentRegistration,
-        #[cfg(feature = "orchestration_unified_stack")]
-        FeatureFlag::OrchestrationUnifiedStack,
         #[cfg(feature = "pending_user_query_indicator")]
         FeatureFlag::PendingUserQueryIndicator,
         #[cfg(feature = "queue_slash_command")]
@@ -513,6 +509,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::CustomModelRouters,
         #[cfg(feature = "supergrok")]
         FeatureFlag::SuperGrok,
+        #[cfg(feature = "chatgpt_subscription")]
+        FeatureFlag::ChatGPTSubscription,
         #[cfg(feature = "gemini_enterprise")]
         FeatureFlag::GeminiEnterprise,
         #[cfg(feature = "nld_prompt_history_match")]
@@ -525,8 +523,12 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::TerminalLifecycleRecovery,
         #[cfg(feature = "ctrl_c_cancels_third_party_harness")]
         FeatureFlag::CtrlCCancelsThirdPartyHarness,
+        #[cfg(feature = "shell_widget_handoff")]
+        FeatureFlag::ShellWidgetHandoff,
         #[cfg(feature = "history_search_ranking_v2")]
         FeatureFlag::HistorySearchRankingV2,
+        #[cfg(feature = "stored_screenshots")]
+        FeatureFlag::StoredScreenshots,
     ]);
 
     flags

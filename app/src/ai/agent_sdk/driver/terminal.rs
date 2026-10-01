@@ -34,10 +34,11 @@ use crate::terminal::model::find::RegexDFAs;
 use crate::terminal::model::grid::RespectDisplayedOutput;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::session::ExecuteCommandOptions;
+use crate::terminal::model::terminal_model::ShellProcessInfo;
 use crate::terminal::shared_session::{self, IsSharedSessionCreator, SharedSessionSource};
 use crate::terminal::shell::ShellType;
 use crate::terminal::view::{ConversationRestorationInNewPaneType, Event};
-use crate::workspaces::user_workspaces::UserWorkspaces;
+use crate::workspaces::user_workspaces::{HeadlessTeamScope, TeamScope, UserWorkspaces};
 
 /// Describes why a terminal session bootstrap failed.
 #[derive(Debug)]
@@ -108,12 +109,13 @@ const TERMINAL_SESSION_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(60);
 const TERMINAL_SESSION_SHARE_DELAY: Duration = Duration::from_secs(20);
 
 /// Options for creating the terminal view before constructing a [`TerminalDriver`].
-pub(crate) struct TerminalDriverOptions {
+pub(crate) struct TerminalDriverOptions<'a> {
     pub working_dir: PathBuf,
     pub env_vars: HashMap<OsString, OsString>,
     pub should_share: bool,
     pub task_id: Option<AmbientAgentTaskId>,
     pub conversation_restoration: Option<ConversationRestorationInNewPaneType>,
+    pub team_scope: Option<&'a HeadlessTeamScope>,
 }
 
 /// Events emitted by [`TerminalDriver`] for [`super::AgentDriver`] to react to.
@@ -189,7 +191,7 @@ impl Entity for TerminalDriver {
 /// This is separate from [`TerminalDriver::new`] because [`AppContext::add_model`]
 /// requires an infallible constructor; the fallible window/view creation must happen first.
 fn create_terminal_view(
-    options: TerminalDriverOptions,
+    options: TerminalDriverOptions<'_>,
     ctx: &mut AppContext,
 ) -> Result<ViewHandle<TerminalView>, AgentDriverError> {
     let is_shared_session_creator = if options.should_share {
@@ -200,6 +202,7 @@ fn create_terminal_view(
         IsSharedSessionCreator::No
     };
 
+    let initial_team_uid = options.team_scope.and_then(TeamScope::team_uid);
     let (_, root_view) = open_new_with_workspace_source(
         NewWorkspaceSource::Session {
             options: Box::new(NewTerminalOptions {
@@ -209,6 +212,7 @@ fn create_terminal_view(
                 conversation_restoration: options.conversation_restoration,
                 ..Default::default()
             }),
+            initial_team_uid,
         },
         ctx,
     );
@@ -227,7 +231,7 @@ fn create_terminal_view(
 impl TerminalDriver {
     /// Create a terminal view from the given options and wrap it in a new `TerminalDriver` model.
     pub(crate) fn create(
-        options: TerminalDriverOptions,
+        options: TerminalDriverOptions<'_>,
         ctx: &mut AppContext,
     ) -> Result<ModelHandle<Self>, AgentDriverError> {
         let should_share = options.should_share;
@@ -425,6 +429,26 @@ impl TerminalDriver {
         self.terminal_view.update(ctx, |terminal, ctx| {
             terminal.submit_text_to_cli_agent_pty(text, ctx);
         });
+    }
+
+    /// Sends a raw Enter (`\r`) to the CLI agent's PTY, bypassing the normal
+    /// rich-input submission pipeline (which no-ops on empty text). Used to
+    /// retry a bare Enter during harness exit escalation — e.g. in case a
+    /// prior exit write was silently dropped, or to dismiss a confirmation
+    /// prompt.
+    pub(super) fn send_bare_enter_to_cli(&self, ctx: &mut ModelContext<Self>) {
+        self.terminal_view.update(ctx, |terminal, ctx| {
+            terminal.submit_bare_enter_to_cli_agent_pty(ctx);
+        });
+    }
+
+    /// The pty's shell process info for this terminal, if the shell has been
+    /// spawned and hasn't exited. Used to locate the actual foreground
+    /// process group when force-killing a harness that didn't exit
+    /// gracefully.
+    pub(super) fn shell_process_info(&self, ctx: &AppContext) -> Option<ShellProcessInfo> {
+        let terminal = self.terminal_view.as_ref(ctx);
+        terminal.model.lock().shell_process_info().copied()
     }
 
     /// Return a snapshot of the block with the given ID.

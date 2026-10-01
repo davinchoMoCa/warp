@@ -565,7 +565,7 @@ impl TryFrom<ReadMCPResourceResult> for api::request::input::tool_call_result::R
                             api::read_mcp_resource_result::Success {
                                 contents: resource_contents
                                     .into_iter()
-                                    .map(convert_mcp_resource_content)
+                                    .filter_map(convert_mcp_resource_content)
                                     .collect(),
                             },
                         )),
@@ -1015,7 +1015,11 @@ impl From<DocumentContext> for Vec<api::DocumentContent> {
     }
 }
 
-fn convert_mcp_resource_content(val: rmcp::model::ResourceContents) -> api::McpResourceContent {
+/// Returns `None` for resource kinds added to the protocol after this mapping was written;
+/// `ResourceContents` is `#[non_exhaustive]`.
+fn convert_mcp_resource_content(
+    val: rmcp::model::ResourceContents,
+) -> Option<api::McpResourceContent> {
     use api::mcp_resource_content::*;
     match val {
         rmcp::model::ResourceContents::TextResourceContents {
@@ -1023,25 +1027,29 @@ fn convert_mcp_resource_content(val: rmcp::model::ResourceContents) -> api::McpR
             mime_type,
             text,
             ..
-        } => api::McpResourceContent {
+        } => Some(api::McpResourceContent {
             uri,
             content_type: Some(ContentType::Text(Text {
                 content: text,
                 mime_type: mime_type.unwrap_or_default(),
             })),
-        },
+        }),
         rmcp::model::ResourceContents::BlobResourceContents {
             uri,
             mime_type,
             blob,
             ..
-        } => api::McpResourceContent {
+        } => Some(api::McpResourceContent {
             uri,
             content_type: Some(ContentType::Binary(Binary {
                 data: blob.into_bytes(),
                 mime_type: mime_type.unwrap_or_default(),
             })),
-        },
+        }),
+        _ => {
+            log::warn!("Unsupported MCP resource content kind");
+            None
+        }
     }
 }
 
@@ -1088,7 +1096,7 @@ impl TryFrom<RequestComputerUseResult> for api::request::input::tool_call_result
                                     height_px: screenshot.original_height as i32,
                                 }),
                                 initial_screenshot: Some(api::RawImage {
-                                    data: screenshot.data,
+                                    source: Some(api::raw_image::Source::Data(screenshot.data)),
                                     mime_type: screenshot.mime_type.to_string(),
                                     width: screenshot.width as i32,
                                     height: screenshot.height as i32,
@@ -1127,40 +1135,31 @@ impl TryFrom<UseComputerResult> for api::request::input::tool_call_result::Resul
 
     fn try_from(result: UseComputerResult) -> Result<Self, Self::Error> {
         match result {
-            UseComputerResult::Success(result) => {
-                // Copy out the captured-window metadata (if any) before the owned fields of
-                // `result` are moved into the message below.
-                let captured = result.captured_window;
-                Ok(api::request::input::tool_call_result::Result::UseComputer(
-                    api::UseComputerResult {
-                        result: Some(api::use_computer_result::Result::Success(
-                            api::use_computer_result::Success {
-                                screenshot: result.screenshot.map(|s| api::RawImage {
-                                    data: s.data,
-                                    mime_type: s.mime_type.to_string(),
-                                    width: s.width as i32,
-                                    height: s.height as i32,
-                                }),
-                                cursor_position: result.cursor_position.map(vec_to_coordinates),
-                                windows: result
-                                    .windows
-                                    .into_iter()
-                                    .map(convert_window_info)
-                                    .collect(),
-                                // The window id is an opaque string on the wire; on macOS it is a
-                                // CGWindowID, so format the u32 back to a string at the boundary.
-                                captured_window: captured.map(|c| {
-                                    api::use_computer_result::success::CapturedWindow {
-                                        window_id: c.window_id.to_string(),
-                                        width_px: c.width_px,
-                                        height_px: c.height_px,
-                                    }
-                                }),
-                            },
-                        )),
-                    },
-                ))
-            }
+            UseComputerResult::Success {
+                screenshot,
+                cursor_position,
+                windows,
+                captured_window,
+            } => Ok(api::request::input::tool_call_result::Result::UseComputer(
+                api::UseComputerResult {
+                    result: Some(api::use_computer_result::Result::Success(
+                        api::use_computer_result::Success {
+                            screenshot: screenshot.map(convert_screenshot_source),
+                            cursor_position: cursor_position.map(vec_to_coordinates),
+                            windows: windows.into_iter().map(convert_window_info).collect(),
+                            // The window id is an opaque string on the wire; on macOS it is a
+                            // CGWindowID, so format the u32 back to a string at the boundary.
+                            captured_window: captured_window.map(|c| {
+                                api::use_computer_result::success::CapturedWindow {
+                                    window_id: c.window_id.to_string(),
+                                    width_px: c.width_px,
+                                    height_px: c.height_px,
+                                }
+                            }),
+                        },
+                    )),
+                },
+            )),
             UseComputerResult::Error(error) => {
                 Ok(api::request::input::tool_call_result::Result::UseComputer(
                     api::UseComputerResult {
@@ -1172,6 +1171,30 @@ impl TryFrom<UseComputerResult> for api::request::input::tool_call_result::Resul
             }
             UseComputerResult::Cancelled => Err(ConvertToAPITypeError::Ignore),
         }
+    }
+}
+
+/// Converts a screenshot source to the wire `RawImage`, preserving whether the
+/// bytes are inline or a stored object-storage ref.
+fn convert_screenshot_source(source: ScreenshotSource) -> api::RawImage {
+    match source {
+        ScreenshotSource::Inline(screenshot) => api::RawImage {
+            source: Some(api::raw_image::Source::Data(screenshot.data)),
+            mime_type: screenshot.mime_type.to_string(),
+            width: screenshot.width as i32,
+            height: screenshot.height as i32,
+        },
+        ScreenshotSource::Stored {
+            stored_ref,
+            mime_type,
+            width,
+            height,
+        } => api::RawImage {
+            source: Some(api::raw_image::Source::StoredRef(stored_ref)),
+            mime_type,
+            width,
+            height,
+        },
     }
 }
 
@@ -1224,24 +1247,29 @@ fn convert_mcp_tool_call_result(
             .content
             .into_iter()
             .filter_map(|content| {
-                use rmcp::model::RawContent::*;
-                match content.raw {
-                    Text(raw_text_content) => Some(result::Result::Text(result::Text {
-                        text: raw_text_content.text,
+                use rmcp::model::ContentBlock::*;
+                match content {
+                    Text(text_content) => Some(result::Result::Text(result::Text {
+                        text: text_content.text,
                     })),
-                    Image(raw_image_content) => Some(result::Result::Image(result::Image {
-                        data: raw_image_content.data.into_bytes(),
-                        mime_type: raw_image_content.mime_type,
+                    Image(image_content) => Some(result::Result::Image(result::Image {
+                        data: image_content.data.into_bytes(),
+                        mime_type: image_content.mime_type,
                     })),
-                    Resource(raw_embedded_resource) => Some(result::Result::Resource(
-                        convert_mcp_resource_content(raw_embedded_resource.resource),
-                    )),
+                    Resource(embedded_resource) => {
+                        convert_mcp_resource_content(embedded_resource.resource)
+                            .map(result::Result::Resource)
+                    }
                     Audio(_) => {
                         log::warn!("Audio content not supported");
                         None
                     }
                     ResourceLink(_) => {
                         log::warn!("Resource link content not supported");
+                        None
+                    }
+                    _ => {
+                        log::warn!("Unsupported MCP content block kind");
                         None
                     }
                 }

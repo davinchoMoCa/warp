@@ -8,6 +8,7 @@ use warp_multi_agent_api as api;
 use super::convert_to::convert_input;
 use super::{ConvertToAPITypeError, RequestParams, ResponseStream};
 use crate::ai::agent::redaction;
+use crate::ai::blocklist::video_recording_enabled;
 use crate::server::server_api::{AIApiError, ServerApi};
 use crate::server::team_scope::RequestTeamScope;
 use crate::terminal::model::session::SessionType;
@@ -58,6 +59,7 @@ pub async fn generate_multi_agent_output(
     let api_keys = api_keys_with_warp_credit_fallback_setting(
         params.api_keys,
         params.allow_use_of_warp_credits,
+        params.skip_chatgpt_subscription,
     );
 
     let request = api::Request {
@@ -108,6 +110,11 @@ pub async fn generate_multi_agent_output(
                 && FeatureFlag::CloudAgentRunners.is_enabled(),
             supports_background_computer_use: FeatureFlag::BackgroundComputerUse.is_enabled()
                 && computer_use::background_supported(),
+            supports_stored_screenshots: FeatureFlag::StoredScreenshots.is_enabled(),
+            // Unconditional: echoed agent messages are always confirmed delivered, so injection
+            // cannot produce a duplicate turn.
+            supports_server_side_agent_message_injection: true,
+            supports_chatgpt_subscription_error: true,
             custom_model_providers: params.custom_model_providers,
             custom_model_routers: params.custom_model_routers,
         }),
@@ -191,16 +198,21 @@ async fn convert_multi_agent_client_error(
 fn api_keys_with_warp_credit_fallback_setting(
     api_keys: Option<api::request::settings::ApiKeys>,
     allow_use_of_warp_credits: bool,
+    skip_chatgpt_subscription: bool,
 ) -> Option<api::request::settings::ApiKeys> {
     match api_keys {
         Some(mut api_keys) => {
             api_keys.allow_use_of_warp_credits = allow_use_of_warp_credits;
+            api_keys.skip_chatgpt_subscription = skip_chatgpt_subscription;
             Some(api_keys)
         }
-        None if allow_use_of_warp_credits => Some(api::request::settings::ApiKeys {
-            allow_use_of_warp_credits: true,
-            ..Default::default()
-        }),
+        None if allow_use_of_warp_credits || skip_chatgpt_subscription => {
+            Some(api::request::settings::ApiKeys {
+                allow_use_of_warp_credits,
+                skip_chatgpt_subscription,
+                ..Default::default()
+            })
+        }
         None => None,
     }
 }
@@ -264,7 +276,7 @@ fn get_supported_tools(params: &RequestParams) -> Vec<api::ToolType> {
         supported_tools.extend(&[api::ToolType::UseComputer]);
         supported_tools.extend(&[api::ToolType::RequestComputerUse]);
 
-        if FeatureFlag::VideoRecording.is_enabled() {
+        if video_recording_enabled() {
             supported_tools.extend(&[api::ToolType::StartRecording, api::ToolType::StopRecording]);
         }
     }

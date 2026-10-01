@@ -41,10 +41,10 @@ use warpui::{
 };
 
 use super::common::{
-    DebugFooterProps, FailedOutputProps, FindContext, STATUS_FOOTER_VERTICAL_PADDING,
-    STATUS_ICON_SIZE_DELTA, TextSectionsProps, render_debug_footer, render_failed_output,
-    render_informational_footer, render_output_status_text, render_scrollable_collapsible_content,
-    render_text_sections,
+    ChatGPTSubscriptionActionProps, DebugFooterProps, FailedOutputProps, FindContext,
+    STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA, TextSectionsProps, render_debug_footer,
+    render_failed_output, render_informational_footer, render_output_status_text,
+    render_scrollable_collapsible_content, render_text_sections,
 };
 use super::imported_comments::render_imported_comments;
 use super::todos::{render_completed_todo_items, render_todos};
@@ -55,17 +55,18 @@ use super::{
 };
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::comment::ReviewComment;
-use crate::ai::agent::conversation::{RecordingSpanInfo, RecordingSpanStatus};
+use crate::ai::agent::conversation::{AIConversation, RecordingSpanInfo, RecordingSpanStatus};
 use crate::ai::agent::icons::{self, gray_stop_icon, yellow_stop_icon};
+use crate::ai::agent::request_metadata::TurnPanelData;
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
     AIAgentActionType, AIAgentCitation, AIAgentInput, AIAgentOutputMessage,
-    AIAgentOutputMessageType, AIAgentText, AIAgentTextSection, CancellationOutcome, MessageId,
-    ReadFilesFailedFile, ReadFilesRequest, ReadFilesResult, RequestCommandOutputResult,
-    SearchCodebaseFailureReason, SearchCodebaseResult, StartRecordingResult, StopRecordingResult,
-    SubagentCall, SubagentType, SuggestNewConversationResult, SummarizationType, TodoOperation,
-    UploadArtifactResult,
+    AIAgentOutputMessageType, AIAgentText, AIAgentTextSection, CancellationOutcome,
+    ChatGPTSubscriptionErrorActionKind, MessageId, ReadFilesFailedFile, ReadFilesRequest,
+    ReadFilesResult, RequestCommandOutputResult, SearchCodebaseFailureReason, SearchCodebaseResult,
+    StartRecordingResult, StopRecordingResult, SubagentCall, SubagentType,
+    SuggestNewConversationResult, SummarizationType, TodoOperation, UploadArtifactResult,
 };
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
@@ -102,6 +103,9 @@ use crate::ai::blocklist::inline_action::web_fetch::WebFetchView;
 use crate::ai::blocklist::inline_action::web_search::WebSearchView;
 use crate::ai::blocklist::keyboard_navigable_buttons::KeyboardNavigableButtons;
 use crate::ai::blocklist::secret_redaction::SecretRedactionState;
+use crate::ai::blocklist::usage::request_metadata_turn_view::{
+    RequestMetadataTurnView, turn_panel_tooltip_text_for_data,
+};
 use crate::ai::blocklist::usage::rollup::compute_orchestration_rollup;
 use crate::ai::blocklist::view_util::{
     FAILED_OUTPUT_USAGE_NOTICE_TEXT, format_usage, should_show_failed_output_usage_notice,
@@ -184,6 +188,8 @@ pub(crate) struct Props<'a> {
     pub(super) has_accepted_edits: bool,
     pub(super) finish_reason: Option<&'a FinishReason>,
     pub(super) is_usage_footer_expanded: bool,
+    pub(super) is_turn_panel_expanded: bool,
+    pub(super) turn_panel_view: Option<&'a ViewHandle<RequestMetadataTurnView>>,
     pub(super) shared_session_status: &'a SharedSessionStatus,
     pub(super) terminal_view_id: EntityId,
     pub(super) is_conversation_transcript_viewer: bool,
@@ -298,10 +304,9 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                         && !is_conversation_in_progress
                         && request_type.is_active()
                         && !props.is_cloud_agent_pre_first_exchange
-                        && !status
-                            .error()
-                            .map(|e| e.is_invalid_api_key())
-                            .unwrap_or_default();
+                        && !status.error().is_some_and(|e| {
+                            e.is_invalid_api_key() || e.is_chatgpt_subscription_error()
+                        });
 
                 let mut has_rendered_first_text_section = false;
 
@@ -1168,6 +1173,9 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                     .then(|| render_response_footer(props, app))
                     .flatten()
                 {
+                    if let Some(turn_panel_view) = props.turn_panel_view {
+                        output_items.add_child(ChildView::new(turn_panel_view).finish());
+                    }
                     output_items.add_child(footer);
                 }
 
@@ -1211,6 +1219,10 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
         // actually failed. Dogfood builds (Local/Dev) opt out so developers still see
         // every transport failure aggressively.
         if !error.should_suppress_during_recovery() {
+            let conversation_uses_warp_credits_instead_of_chatgpt = props
+                .model
+                .conversation(app)
+                .is_some_and(AIConversation::use_warp_credits_instead_of_chatgpt);
             output_items.add_child(
                 render_failed_output(
                     FailedOutputProps {
@@ -1224,6 +1236,11 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                             .aws_bedrock_credentials_error_view,
                         gemini_enterprise_credentials_error_view: props
                             .gemini_enterprise_credentials_error_view,
+                        chatgpt_subscription_actions: Some(ChatGPTSubscriptionActionProps {
+                            handles: &props.state_handles.chatgpt_subscription_action_handles,
+                            on_click: dispatch_chatgpt_subscription_action,
+                        }),
+                        conversation_uses_warp_credits_instead_of_chatgpt,
                         icon_right_margin: 16.,
                     },
                     app,
@@ -1277,6 +1294,22 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
     }
 
     output_items.finish()
+}
+
+fn dispatch_chatgpt_subscription_action(
+    kind: &ChatGPTSubscriptionErrorActionKind,
+    ctx: &mut warpui::EventContext,
+    app: &AppContext,
+) {
+    match kind {
+        ChatGPTSubscriptionErrorActionKind::Retry => {
+            ctx.dispatch_typed_action(AIBlockAction::ResumeConversation)
+        }
+        ChatGPTSubscriptionErrorActionKind::ContinueWithWarpCredits => {
+            ctx.dispatch_typed_action(AIBlockAction::ContinueWithWarpCredits)
+        }
+        ChatGPTSubscriptionErrorActionKind::OpenUrl { url } => app.open_url(url),
+    }
 }
 
 fn should_render_stopped_output(props: Props, app: &AppContext) -> bool {
@@ -3200,7 +3233,8 @@ fn render_use_computer(
             renderable_action.with_footer(render_recording_footer(recording_span.status, app));
     }
 
-    // Add a "View screenshot" button if the action result contains a screenshot.
+    // Add a "View screenshot" button if the action result contains a screenshot,
+    // either inline or offloaded to object storage.
     let has_screenshot = props
         .action_model
         .as_ref(app)
@@ -3209,8 +3243,11 @@ fn render_use_computer(
             matches!(
                 &result.result,
                 AIAgentActionResultType::UseComputer(
-                    crate::ai::agent::UseComputerResult::Success(action_result)
-                ) if action_result.screenshot.is_some()
+                    crate::ai::agent::UseComputerResult::Success {
+                        screenshot: Some(_),
+                        ..
+                    }
+                )
             )
         });
 
@@ -3451,16 +3488,9 @@ fn render_suggested_rules_and_prompts_footer(
     )
 }
 
-fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Element>> {
-    if props.model.status(app).is_streaming() {
-        return None;
-    }
-
+/// The shared (idle, hovered/active) styles for the icon buttons in a block's response footer.
+fn footer_icon_button_styles(app: &AppContext) -> (UiComponentStyles, UiComponentStyles) {
     let appearance = Appearance::as_ref(app);
-    let mut flex = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-    let is_passive_code_diff = props.model.request_type(app).is_passive_code_diff();
-
-    // Show footer for any terminal state (complete, cancelled, or failed)
     let style_override = UiComponentStyles {
         font_color: Some(
             appearance
@@ -3476,6 +3506,27 @@ fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Elem
         background: Some(blended_colors::neutral_4(appearance.theme()).into()),
         ..style_override
     };
+    (style_override, style_override_with_background)
+}
+
+/// The Turn panel contents for the user-visible turn this block closes
+fn turn_panel_data_for_block(props: Props, app: &AppContext) -> Option<TurnPanelData> {
+    let exchange_id = props.model.exchange_id(app)?;
+    let conversation = props.model.conversation(app)?;
+    conversation.turn_panel_data(exchange_id)
+}
+
+fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Element>> {
+    if props.model.status(app).is_streaming() {
+        return None;
+    }
+
+    let appearance = Appearance::as_ref(app);
+    let mut flex = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+    let is_passive_code_diff = props.model.request_type(app).is_passive_code_diff();
+
+    // Show footer for any terminal state (complete, cancelled, or failed)
+    let (style_override, style_override_with_background) = footer_icon_button_styles(app);
 
     let ui_builder = appearance.ui_builder().clone();
 
@@ -3634,7 +3685,25 @@ fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Elem
         flex.add_child(fork_button);
     }
 
-    flex.add_child(render_usage_button(props, app));
+    let turn_panel_data = FeatureFlag::PricingTransparency
+        .is_enabled()
+        .then(|| turn_panel_data_for_block(props, app))
+        .flatten();
+    if let Some(data) = turn_panel_data {
+        flex.add_child(
+            Container::new(render_turn_panel_button(
+                props,
+                &data,
+                style_override,
+                style_override_with_background,
+                app,
+            ))
+            .with_margin_left(4.)
+            .finish(),
+        );
+    } else {
+        flex.add_child(render_usage_button(props, app));
+    }
 
     // Review changes button.
     if props.has_accepted_edits && !props.shared_session_status.is_viewer() {
@@ -3664,6 +3733,39 @@ fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Elem
     }
 
     Some(flex.finish().with_content_item_spacing().finish())
+}
+
+/// Renders the per-turn icon that, on click, opens/closes the docked "Turn" panel backed by the
+/// turn's usage data.
+fn render_turn_panel_button(
+    props: Props,
+    data: &TurnPanelData,
+    style_override: UiComponentStyles,
+    style_override_with_background: UiComponentStyles,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let ui_builder = appearance.ui_builder().clone();
+    let tooltip_text =
+        turn_panel_tooltip_text_for_data(data, AISettings::as_ref(app).usage_display_unit);
+
+    icon_button(
+        appearance,
+        Icon::TurnUsagePie,
+        // Keep the trigger visibly "active" while the panel is open, not just while
+        // hovered/clicked, so the icon reads as the panel's open/closed toggle.
+        props.is_turn_panel_expanded,
+        props.state_handles.turn_panel_button_handle.clone(),
+    )
+    .with_tooltip(move || ui_builder.tool_tip(tooltip_text.clone()).build().finish())
+    .with_style(style_override)
+    .with_hovered_styles(style_override_with_background)
+    .with_active_styles(style_override_with_background)
+    .build()
+    .on_click(|ctx, _, _| {
+        ctx.dispatch_typed_action(AIBlockAction::ToggleIsTurnPanelExpanded);
+    })
+    .finish()
 }
 
 /// Renders the usage button that, on click, will expand & collapse the usage summary footer.

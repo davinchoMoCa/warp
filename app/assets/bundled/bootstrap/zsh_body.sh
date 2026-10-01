@@ -710,6 +710,67 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   }
   zle -N warp_report_input
 
+  # Runs the shell's own ctrl-r history widget as a foreground command.
+  function warp_run_external_ctrl_r_widget () {
+    local result=""
+    case "$_WARP_EXTERNAL_CTRL_R_WIDGET" in
+      fzf-history-widget)
+        local cursor_and_line="${1:-0:}"
+        local char_cursor="${cursor_and_line%%:*}"
+        local original_line="$(warp_hex_decode_string "${cursor_and_line#*:}")"
+        local query="${original_line[1,$char_cursor]}"
+        local fzf_default_opts
+        if (( $+functions[__fzf_defaults] )); then
+          fzf_default_opts="$(__fzf_defaults "" "${FZF_CTRL_R_OPTS-}")"
+        else
+          fzf_default_opts="--height ${FZF_TMUX_HEIGHT:-40%} ${FZF_DEFAULT_OPTS-} ${FZF_CTRL_R_OPTS-}"
+        fi
+        result="$(fc -rl 1 \
+          | command -p awk '{ cmd=$0; sub(/^[ \t]*[0-9]+\**[ \t]+/, "", cmd); if (!seen[cmd]++) print cmd }' \
+          | FZF_DEFAULT_OPTS="$fzf_default_opts" \
+            FZF_DEFAULT_OPTS_FILE='' fzf --scheme=history --tiebreak=index +m --query="$query")"
+        ;;
+      atuin-search|atuin-search-viins|atuin-search-vicmd|_atuin_search_widget)
+        # atuin writes its TUI to stdout; under plain command substitution that's a pipe, and
+        # its cursor-position query (\x1b[6n) has nothing to answer it, so it bails during
+        # startup. Swap stdout/stderr through fd 3, matching atuin's own zsh integration
+        # (_atuin_search -> __atuin_search_cmd), so the TUI reaches the tty while the
+        # selection is still captured via command substitution.
+        result="$(ATUIN_SHELL=zsh atuin search -i 3>&1 1>&2 2>&3 3>&-)"
+        # If the user has atuin's enter_accept config on, Enter both selects and runs the
+        # command, signaled by this prefix; we only ever want the selection, never to run it,
+        # so strip the prefix in both cases (see atuin's _atuin_search for the same check).
+        result="${result#__atuin_accept__:}"
+        ;;
+    esac
+    local warp_escaped_selection="$(warp_escape_json "$result")"
+    warp_send_json_message "{ \"hook\": \"ExternalShellWidgetSelection\", \"value\": { \"buffer\": \"$warp_escaped_selection\", \"session_id\": $WARP_SESSION_ID } }"
+  }
+
+  # Runs fzf's ctrl-t file-search widget as a foreground command.
+  function warp_run_external_ctrl_t_widget () {
+    local result=""
+    if (( $+functions[__fzf_select] )); then
+      result="$(__fzf_select)"
+    else  # fzf < 0.48
+      result="$(__fsel)"
+    fi
+    local warp_escaped_selection="$(warp_escape_json "$result")"
+    warp_send_json_message "{ \"hook\": \"ExternalShellWidgetSelection\", \"value\": { \"buffer\": \"$warp_escaped_selection\", \"session_id\": $WARP_SESSION_ID } }"
+  }
+
+  function warp_run_external_alt_c_widget () {
+    setopt localoptions pipefail no_aliases 2>/dev/null
+    local dir="$(
+      FZF_DEFAULT_COMMAND=${FZF_ALT_C_COMMAND:-} \
+      FZF_DEFAULT_OPTS=$(__fzf_defaults "--reverse --walker=dir,follow,hidden --scheme=path" "${FZF_ALT_C_OPTS-} +m") \
+      FZF_DEFAULT_OPTS_FILE='' $(__fzfcmd) < /dev/tty
+    )"
+    [[ -n "$dir" ]] || return 0
+    dir=$(builtin cd -q >/dev/null -- "$dir" && echo "$PWD" || echo "$dir")
+    builtin cd -- "$dir"
+  }
+
   function clear() {
       warp_send_json_message "{\"hook\": \"Clear\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
   }
@@ -1279,7 +1340,9 @@ esac
   # See https://zsh.sourceforge.io/Doc/Release/Functions.html for more context
   # on the zshaddhistory hook.
   _warp_zshaddhistory() {
-    _is_warp_generator_command "$1"
+    _is_warp_generator_command "$1" && [[ "$1" != *"warp_run_external_ctrl_r_widget"* ]] && \
+      [[ "$1" != *"warp_run_external_ctrl_t_widget"* ]] && \
+      [[ "$1" != *"warp_run_external_alt_c_widget"* ]]
   }
 
   # Register this zshaddhistory hook after the user's RC files have been sourced,
@@ -1351,6 +1414,23 @@ esac
   # Check if the zsh-vi-mode plugin is being used.
   elif [[ ${precmd_functions[(I)zvm_init]} != 0 ]]; then
     shell_plugins+=(vi)
+  fi
+
+  # Detect whether ctrl-r has been rebound to fzf's or atuin's history widget.
+  _WARP_EXTERNAL_CTRL_R_WIDGET=""
+  warp_ctrl_r_binding="$(bindkey -M main '^R' 2>/dev/null)"
+  if [[ "$warp_ctrl_r_binding" == '"^R" '* ]]; then
+    warp_ctrl_r_widget="${warp_ctrl_r_binding#\"^R\" }"
+    case "$warp_ctrl_r_widget" in
+      fzf-history-widget)
+        _WARP_EXTERNAL_CTRL_R_WIDGET="$warp_ctrl_r_widget"
+        shell_plugins+=(fzf)
+        ;;
+      atuin-search|atuin-search-viins|atuin-search-vicmd|_atuin_search_widget)
+        _WARP_EXTERNAL_CTRL_R_WIDGET="$warp_ctrl_r_widget"
+        shell_plugins+=(atuin)
+        ;;
+    esac
   fi
 
   if kernel_name="$(uname)"; then

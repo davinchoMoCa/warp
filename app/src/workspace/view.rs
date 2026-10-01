@@ -1,6 +1,7 @@
 pub(crate) mod agent_cli_launch_modal;
 pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
+pub(crate) mod chatgpt_plan_modal;
 pub(crate) mod cloud_agent_capacity_modal;
 pub(crate) mod codex_modal;
 pub mod conversation_list;
@@ -55,6 +56,7 @@ use futures::Future;
 use instant::Instant;
 use itertools::Itertools;
 use lazy_static::lazy_static;
+use onboarding::DeferredOnboardingTutorial;
 pub(crate) use onboarding::OnboardingTutorial;
 use parking_lot::FairMutex;
 use pathfinder_color::ColorU;
@@ -156,7 +158,7 @@ use super::tab_settings::{
 };
 use super::util::{
     PaneViewLocator, TabMovement, TerminalSessionFallbackBehavior, WelcomeTipsViewState,
-    WorkspaceMouseStates, WorkspaceState,
+    WorkspaceMouseStates, WorkspaceState, team_switcher_menu_items,
 };
 use super::{ActiveSession, TabBarDropTargetData, TabBarLocation, WorkspaceRegistry, util};
 use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
@@ -210,7 +212,7 @@ use crate::ai::blocklist::{
     BlocklistAIHistoryEvent, FORK_PREFIX, PendingAttachment, PendingQueryState, QueuedQueryOrigin,
     SerializedBlockListItem, SlashCommandRequest,
 };
-use crate::ai::cloud_agent_settings::CloudAgentSettings;
+use crate::ai::cloud_agent_settings::{AuthSecretPreference, CloudAgentSettings};
 #[cfg(target_family = "wasm")]
 use crate::ai::conversation_details_panel::ConversationDetailsPanel;
 use crate::ai::conversation_utils;
@@ -397,12 +399,13 @@ use crate::terminal::enable_auto_reload_modal::{
 use crate::terminal::general_settings::GeneralSettings;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::input::slash_commands::fork_button_action;
-use crate::terminal::input::{Input, MenuPositioning};
+use crate::terminal::input::{EXTERNAL_ALT_C_BINDING_CONTEXT, Input, MenuPositioning};
 use crate::terminal::keys_settings::KeysSettings;
 use crate::terminal::ligature_settings::should_use_ligature_rendering;
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_tty::docker_sandbox::resolve_sbx_path_from_user_shell;
 use crate::terminal::model::blockgrid::BlockGrid;
+use crate::terminal::model::escape_sequences::C0;
 #[cfg(feature = "local_fs")]
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::SessionId;
@@ -514,6 +517,7 @@ use crate::workspace::view::auto_handoff_sleep_modal::{
 use crate::workspace::view::build_plan_migration_modal::{
     BuildPlanMigrationModal, BuildPlanMigrationModalEvent,
 };
+use crate::workspace::view::chatgpt_plan_modal::{ChatGPTPlanModal, ChatGPTPlanModalEvent};
 use crate::workspace::view::cloud_agent_capacity_modal::{
     CloudAgentCapacityModal, CloudAgentCapacityModalEvent, CloudAgentCapacityModalVariant,
 };
@@ -599,6 +603,27 @@ const THEME_CHOOSER_RATIO: f32 = 3.5;
 pub(crate) const TAB_BAR_POSITION_ID: &str = "workspace_view:tab_bar";
 const TEAM_SWITCHER_PILL_POSITION_ID: &str = "workspace_view:team_switcher_pill";
 const TEAM_SWITCHER_DOT_ALPHA: u8 = 204;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TeamNavigationMode {
+    Hidden,
+    BrowseTeams,
+    TeamSwitcher,
+}
+
+fn team_navigation_mode(
+    has_current_team: bool,
+    has_teams: bool,
+    can_switch_teams: bool,
+    has_joinable_teams: bool,
+) -> TeamNavigationMode {
+    if has_current_team && (can_switch_teams || has_joinable_teams) {
+        TeamNavigationMode::TeamSwitcher
+    } else if !has_teams && has_joinable_teams {
+        TeamNavigationMode::BrowseTeams
+    } else {
+        TeamNavigationMode::Hidden
+    }
+}
 
 /// Save position for the vertical tabs panel.
 /// HOA onboarding callouts anchor relative to this position, so whichever code
@@ -667,6 +692,7 @@ pub(crate) const TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME: &str =
 pub(crate) const NEW_TAB_BINDING_NAME: &str = "workspace:new_tab";
 pub(crate) const NEW_TERMINAL_TAB_BINDING_NAME: &str = "workspace:new_terminal_tab";
 pub(crate) const NEW_FILE_BINDING_NAME: &str = "workspace:new_file";
+pub(crate) const NEW_WINDOW_BINDING_NAME: &str = "workspace:new_window";
 pub(crate) const NEW_AGENT_TAB_BINDING_NAME: &str = "workspace:new_agent_tab";
 pub(crate) const NEW_AMBIENT_AGENT_TAB_BINDING_NAME: &str = "workspace:new_ambient_agent_tab";
 pub(crate) const TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME: &str = "workspace:toggle_tab_configs_menu";
@@ -1086,6 +1112,7 @@ pub struct Workspace {
     show_session_config_tab_config_chip: bool,
     pending_session_config_tab_config_chip_tutorial:
         Option<PendingSessionConfigTabConfigChipTutorial>,
+    onboarding_tutorial_deferred_by_modal: Option<DeferredOnboardingTutorial>,
     new_worktree_modal: ModalViewState<Modal<NewWorktreeModal>>,
     close_session_confirmation_dialog: ViewHandle<CloseSessionConfirmationDialog>,
     rewind_confirmation_dialog: ViewHandle<RewindConfirmationDialog>,
@@ -1125,6 +1152,7 @@ pub struct Workspace {
     /// not re-show it elsewhere.
     feature_intro_tab_pane_group_id: Option<EntityId>,
     auto_handoff_sleep_modal: ViewHandle<AutoHandoffSleepModal>,
+    chatgpt_plan_modal: ViewHandle<ChatGPTPlanModal>,
     enable_auto_reload_modal: ViewHandle<EnableAutoReloadModal>,
     build_plan_migration_modal: ViewHandle<BuildPlanMigrationModal>,
     codex_modal: ViewHandle<CodexModal>,
@@ -1514,10 +1542,15 @@ impl Workspace {
             .is_any_tab_group_being_renamed()
         {
             match event {
-                EditorEvent::Blurred | EditorEvent::Enter => {
+                EditorEvent::Enter => {
                     self.finish_tab_group_rename(ctx);
                 }
-                EditorEvent::Escape => {
+                // Blur discards rather than commits. Focus can leave this editor without
+                // the user ever ending the rename — #14241 is one such case — and
+                // committing then writes a half-typed fragment as the group's real,
+                // persisted name. Discarding loses nothing the user cannot retype, and
+                // Enter remains the way to confirm.
+                EditorEvent::Blurred | EditorEvent::Escape => {
                     self.cancel_tab_group_rename(ctx);
                 }
                 _ => {}
@@ -3053,6 +3086,11 @@ impl Workspace {
             me.handle_auto_handoff_sleep_modal_event(event, ctx);
         });
 
+        let chatgpt_plan_view = ctx.add_typed_action_view(ChatGPTPlanModal::new);
+        ctx.subscribe_to_view(&chatgpt_plan_view, |me, _, event, ctx| {
+            me.handle_chatgpt_plan_modal_event(event, ctx);
+        });
+
         let launch_config_save_modal = Self::build_launch_config_save_modal(ctx);
 
         let tab_config_params_modal = Self::build_tab_config_params_modal(ctx);
@@ -3379,6 +3417,8 @@ impl Workspace {
                         me.focus_agent_cli_launch_modal(ctx);
                     } else if model_ref.is_auto_handoff_sleep_modal_open() {
                         me.focus_auto_handoff_sleep_modal(ctx);
+                    } else if model_ref.is_chatgpt_plan_modal_open() {
+                        me.focus_chatgpt_plan_modal(ctx);
                     } else if model_ref.is_free_ai_removal_modal_open() {
                         me.focus_free_ai_removal_modal(ctx);
                     } else if model_ref.is_hoa_onboarding_open() {
@@ -3389,6 +3429,8 @@ impl Workspace {
                         me.show_feature_intro_modal(id, ctx);
                     }
                 }
+            } else {
+                me.resume_onboarding_tutorial_deferred_by_modal(ctx);
             }
             ctx.notify();
         });
@@ -3455,6 +3497,7 @@ impl Workspace {
             pending_session_config_tab_config_chip: false,
             show_session_config_tab_config_chip: false,
             pending_session_config_tab_config_chip_tutorial: None,
+            onboarding_tutorial_deferred_by_modal: None,
             new_worktree_modal,
             close_session_confirmation_dialog,
             rewind_confirmation_dialog,
@@ -3529,6 +3572,7 @@ impl Workspace {
             feature_intro_modal: feature_intro_view,
             feature_intro_tab_pane_group_id: None,
             auto_handoff_sleep_modal: auto_handoff_sleep_view,
+            chatgpt_plan_modal: chatgpt_plan_view,
             enable_auto_reload_modal,
             agent_management_view,
             notification_mailbox_view,
@@ -3897,7 +3941,74 @@ impl Workspace {
         window: WindowTemplate,
         ctx: &mut ViewContext<Self>,
     ) {
-        let start_index = self.tabs.len();
+        // `tab_bar_slots` turns every *contiguous* run of same-group tabs into
+        // one group container, so interleaved membership would render as two
+        // containers sharing one id. `resolve_group_memberships` collapses that
+        // to the first run of each group; see its docs for why.
+        let group_count = if FeatureFlag::GroupedTabs.is_enabled() {
+            window.tab_groups.len()
+        } else {
+            0
+        };
+        let memberships = crate::launch_configs::launch_config::resolve_group_memberships(
+            &window.tabs,
+            group_count,
+        );
+
+        // Only mint ids for groups that kept a member. A hand-authored config
+        // can name a group no tab joins, and the collapse above can strip a
+        // group's last tab; inserting those anyway would leave empty groups in
+        // workspace state that nothing can reach. This mirrors the save path,
+        // which already drops groups whose members were all unsaveable.
+        //
+        // Ids are minted here rather than restored: a launch config can be
+        // opened repeatedly, and into a workspace that already holds groups, so
+        // reusing saved ids would collide.
+        let group_ids: Vec<Option<TabGroupId>> = window
+            .tab_groups
+            .iter()
+            .enumerate()
+            .map(|(group_index, group_template)| {
+                if !memberships.contains(&Some(group_index)) {
+                    return None;
+                }
+                let group = TabGroup {
+                    id: TabGroupId::new(),
+                    name: group_template.name.clone(),
+                    color: group_template
+                        .color
+                        .map_or(SelectedTabColor::Unset, SelectedTabColor::Color),
+                    collapsed: group_template.collapsed,
+                    draggable_state: Default::default(),
+                    // Mirrors the session-restore path: only honor pinned
+                    // state while the Pinned Tabs feature is enabled.
+                    pinned: FeatureFlag::PinnedTabs.is_enabled() && group_template.pinned,
+                };
+                let id = group.id;
+                self.tab_groups.insert(id, group);
+                Some(id)
+            })
+            .collect();
+
+        // `add_tab_with_pane_layout` honors the `NewTabPlacement` setting, so a
+        // restored tab is not always appended -- opening into the active window
+        // inserts after the current tab by default, which lands before the end
+        // whenever the active tab is not the last one. It activates whatever it
+        // inserted, so read the real index back instead of assuming
+        // `start_index + tab_index`.
+        let mut restored_indices = Vec::with_capacity(window.tabs.len());
+
+        // Opening into an active window inserts after the active tab, and
+        // `add_tab_with_pane_layout` has that insert inherit the active tab's
+        // group so groups stay contiguous. Overwriting membership below
+        // therefore drops the restored block *inside* a pre-existing group's
+        // run, splitting it in two -- and `tab_bar_slots` renders two runs of
+        // one id as two containers. Remember the host group so the block can be
+        // re-anchored past it once membership is settled.
+        let host_group_id = self
+            .tabs
+            .get(self.active_tab_index)
+            .and_then(|tab| tab.group_id);
 
         window
             .tabs
@@ -3910,20 +4021,58 @@ impl Workspace {
                     tab_template.title.clone(),
                     ctx,
                 );
-                self.tabs[start_index + tab_index].selected_color = tab_template
+                let index = self.active_tab_index;
+                restored_indices.push(index);
+                self.tabs[index].selected_color = tab_template
                     .color
                     .map_or(SelectedTabColor::Unset, SelectedTabColor::Color);
+                // The config is the authority on membership, so a tab it leaves
+                // ungrouped stays ungrouped even though the insert above may
+                // have had it inherit the active tab's group.
+                self.tabs[index].group_id = memberships[tab_index]
+                    .and_then(|group_index| group_ids.get(group_index).copied().flatten());
             });
 
-        if !window.tabs.is_empty() {
-            // Focus the active tab from the launch config.
+        // A pinned group makes its members effectively pinned, and the pinned
+        // region is a prefix of the tab list. The inserts above ran while the
+        // tabs were still ungrouped, so `NewTabPlacement` could leave the block
+        // after the active window's unpinned tabs -- assigning membership is
+        // what pins them, so the repositioning has to happen here, not earlier.
+        // This mirrors `pin_tab_group`: move the group's block to the current
+        // pinned boundary. `restored_indices` goes stale across those moves, so
+        // resolve the tab to focus by its pane group id instead.
+        let active_pane_group_id = window
+            .active_tab_index
+            .and_then(|active| restored_indices.get(active))
+            .or_else(|| restored_indices.first())
+            .and_then(|&index| self.tabs.get(index))
+            .map(|tab| tab.pane_group.id());
 
-            let mut index = start_index + window.active_tab_index.unwrap_or_default();
+        // Re-anchor the restored block past the host group's last remaining
+        // member, mirroring `new_tab_group_from_selected_tabs`. A no-op when
+        // the block already sits outside the group's run.
+        if let Some(host_group_id) = host_group_id {
+            self.move_restored_block_past_group(&restored_indices, host_group_id);
+        }
 
-            if index >= self.tab_count() {
-                index = start_index;
+        for group_id in group_ids.iter().flatten() {
+            if self
+                .tab_groups
+                .get(group_id)
+                .is_some_and(|group| group.pinned)
+            {
+                let target = self.pinned_boundary_index(&self.tabs);
+                self.move_group_block(*group_id, target, ctx);
             }
+        }
 
+        // Focus the active tab from the launch config.
+        let active_index = active_pane_group_id.and_then(|pane_group_id| {
+            self.tabs
+                .iter()
+                .position(|tab| tab.pane_group.id() == pane_group_id)
+        });
+        if let Some(index) = active_index {
             self.activate_tab_internal(index, ctx);
         }
     }
@@ -4040,7 +4189,7 @@ impl Workspace {
                 self.open_launch_config_window(window_template, ctx);
                 self.check_and_trigger_onboarding(ctx);
             }
-            NewWorkspaceSource::Session { options } => {
+            NewWorkspaceSource::Session { options, .. } => {
                 self.add_tab_with_pane_layout(
                     PanesLayout::SingleTerminal(options),
                     Arc::new(HashMap::new()),
@@ -4686,7 +4835,6 @@ impl Workspace {
     }
 
     /// Returns the type of simplified WASM tab bar content to display, if any.
-    /// Used to determine whether to show the simplified tab bar layout on WASM.
     #[cfg(target_family = "wasm")]
     fn get_simplified_wasm_tab_bar_content(
         &self,
@@ -4694,26 +4842,38 @@ impl Workspace {
     ) -> Option<SimplifiedWasmTabBarContent> {
         let pane_group = self.active_tab_pane_group().as_ref(ctx);
 
-        // Check if focused pane is a terminal with special state
         if let Some(terminal_view) = pane_group.focused_session_view(ctx) {
-            let model = terminal_view.as_ref(ctx).model.lock();
+            let view = terminal_view.as_ref(ctx);
+            let (is_transcript_viewer, is_sharer_or_viewer, model_task_id) = {
+                let model = view.model.lock();
+                (
+                    model.is_conversation_transcript_viewer(),
+                    model.shared_session_status().is_sharer_or_viewer(),
+                    model.ambient_agent_task_id(),
+                )
+            };
 
-            // Conversation transcript viewer takes priority
-            if model.is_conversation_transcript_viewer() {
+            if is_transcript_viewer {
                 return Some(SimplifiedWasmTabBarContent::ConversationTranscript {
-                    task_id: model.ambient_agent_task_id(),
+                    task_id: model_task_id,
                 });
             }
 
-            // Check for shared session (viewer or writer)
-            if model.shared_session_status().is_sharer_or_viewer() {
+            if is_sharer_or_viewer {
                 return Some(SimplifiedWasmTabBarContent::SharedSession {
-                    task_id: model.ambient_agent_task_id(),
+                    task_id: model_task_id,
+                });
+            }
+
+            // Owned HandoffCloudCloud restores leave NotShared without transcript-viewer
+            // status; deep-linked WASM workspaces still need the web conversation chrome.
+            if self.opened_from_content_deep_link {
+                return Some(SimplifiedWasmTabBarContent::ConversationTranscript {
+                    task_id: view.ambient_agent_task_id_for_details_panel(ctx),
                 });
             }
         }
 
-        // Check if focused pane is a Warp Drive object
         let focused_pane_id = pane_group.focused_pane_id(ctx);
         if focused_pane_id.is_warp_drive_object_pane() {
             return Some(SimplifiedWasmTabBarContent::WarpDriveObject);
@@ -6159,30 +6319,35 @@ impl Workspace {
     fn show_team_switcher_dropdown(&mut self, ctx: &mut ViewContext<Self>) {
         let window_id = self.window_id;
         let user_workspaces = UserWorkspaces::as_ref(ctx);
-        // Only meaningful when the user can switch teams.
-        if !user_workspaces.can_switch_teams() {
-            return;
-        }
         let Some(workspace) = user_workspaces.current_workspace() else {
             return;
         };
+        let joinable_team_count = if workspace.is_native_workspaces_enabled() {
+            workspace.joinable_teams().count()
+        } else {
+            0
+        };
+        if !user_workspaces.can_switch_teams() && joinable_team_count == 0 {
+            return;
+        }
+        if user_workspaces.team_for_window(window_id).is_none() {
+            return;
+        }
         let current_team_uid = user_workspaces.team_uid_for_window(window_id);
-        let mut items: Vec<MenuItem<WorkspaceAction>> = vec![
-            MenuItemFields::new("Switch team")
-                .with_disabled(true)
-                .into_item(),
-        ];
-        items.extend(workspace.teams.iter().map(|team| {
-            let uid = team.uid;
-            let mut fields = MenuItemFields::new(team.name.clone())
-                .with_on_select_action(WorkspaceAction::OpenNewWindowForTeam { team_uid: uid });
-            fields = if Some(uid) == current_team_uid {
-                fields.with_icon(icons::Icon::Check)
-            } else {
-                fields.with_indent()
-            };
-            fields.into_item()
-        }));
+        let mut items = team_switcher_menu_items(&workspace.teams, current_team_uid);
+        if joinable_team_count > 0 {
+            items.push(MenuItem::Separator);
+            items.push(
+                MenuItemFields::new("Browse teams")
+                    .with_icon(icons::Icon::Search)
+                    .with_right_side_label(
+                        format!("{joinable_team_count} available"),
+                        Properties::default(),
+                    )
+                    .with_on_select_action(WorkspaceAction::BrowseTeams)
+                    .into_item(),
+            );
+        }
         self.team_switcher_menu
             .update(ctx, |menu, ctx| menu.set_items(items, ctx));
         self.show_team_switcher_menu = true;
@@ -6190,47 +6355,57 @@ impl Workspace {
         ctx.notify();
     }
 
-    /// Renders the team-switcher pill shown in the title-bar top-right, to the
-    /// left of the right-side toolbar actions
     fn render_team_switcher_pill(
         &self,
         appearance: &Appearance,
         ctx: &AppContext,
     ) -> Option<Box<dyn Element>> {
         let user_workspaces = UserWorkspaces::as_ref(ctx);
-        // Only show when the user has access to more than one team available to them.
-        if !user_workspaces.can_switch_teams() {
-            return None;
-        }
-        let current_team = user_workspaces.team_for_window(self.window_id)?;
-        let team_name = current_team.name.clone();
-        let team_color_hex = current_team.color.clone();
+        let current_team = user_workspaces.team_for_window(self.window_id);
+        let has_joinable_teams = user_workspaces
+            .current_workspace()
+            .is_some_and(|workspace| {
+                workspace.is_native_workspaces_enabled()
+                    && workspace.joinable_teams().next().is_some()
+            });
+        let mode = team_navigation_mode(
+            current_team.is_some(),
+            user_workspaces.has_teams(),
+            user_workspaces.can_switch_teams(),
+            has_joinable_teams,
+        );
         let theme = appearance.theme();
         let text_color = theme.foreground();
         let pill_bg_normal = internal_colors::fg_overlay_1(theme);
         let pill_bg_hover = internal_colors::fg_overlay_2(theme);
-
-        // Parse the team color for the dot; fall back to a neutral theme grey
-        // (matching the server contract / admin UI default) if invalid/missing.
-        let mut dot_color = team_color_hex
-            .as_deref()
-            .and_then(|hex| warp_core::ui::color::hex_color::coloru_from_hex_string(hex).ok())
-            .unwrap_or_else(|| internal_colors::neutral_5(theme));
-        dot_color.a = TEAM_SWITCHER_DOT_ALPHA;
+        let (label, dot_color, action) = match mode {
+            TeamNavigationMode::Hidden => return None,
+            TeamNavigationMode::BrowseTeams => (
+                "Browse teams".to_string(),
+                None,
+                WorkspaceAction::BrowseTeams,
+            ),
+            TeamNavigationMode::TeamSwitcher => {
+                let current_team = current_team?;
+                let mut dot_color = current_team
+                    .color
+                    .as_deref()
+                    .and_then(|hex| {
+                        warp_core::ui::color::hex_color::coloru_from_hex_string(hex).ok()
+                    })
+                    .unwrap_or_else(|| internal_colors::neutral_5(theme));
+                dot_color.a = TEAM_SWITCHER_DOT_ALPHA;
+                (
+                    current_team.name.clone(),
+                    Some(dot_color),
+                    WorkspaceAction::ShowTeamSwitcherMenu,
+                )
+            }
+        };
 
         let pill = Hoverable::new(self.mouse_states.team_switcher_pill.clone(), move |state| {
-            let dot = ConstrainedBox::new(
-                Rect::new()
-                    .with_background(Fill::Solid(dot_color))
-                    .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
-                    .finish(),
-            )
-            .with_width(8.)
-            .with_height(8.)
-            .finish();
-
             let name_text = Text::new_inline(
-                team_name.clone(),
+                label.clone(),
                 appearance.ui_font_family(),
                 appearance.ui_font_size(),
             )
@@ -6238,14 +6413,25 @@ impl Workspace {
             .with_clip(ClipConfig::ellipsis())
             .finish();
 
-            let row = Flex::row()
+            let mut row = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_spacing(4.)
-                .with_child(dot)
-                .with_child(ConstrainedBox::new(name_text).with_max_width(120.).finish())
-                .finish();
+                .with_spacing(4.);
+            if let Some(dot_color) = dot_color {
+                row.add_child(
+                    ConstrainedBox::new(
+                        Rect::new()
+                            .with_background(Fill::Solid(dot_color))
+                            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+                            .finish(),
+                    )
+                    .with_width(8.)
+                    .with_height(8.)
+                    .finish(),
+                );
+            }
+            row.add_child(ConstrainedBox::new(name_text).with_max_width(120.).finish());
 
-            Container::new(row)
+            Container::new(row.finish())
                 .with_background(if state.is_hovered() {
                     pill_bg_hover
                 } else {
@@ -6259,8 +6445,8 @@ impl Workspace {
                 .finish()
         })
         .with_cursor(Cursor::PointingHand)
-        .on_click(|ctx, _, _| {
-            ctx.dispatch_typed_action(WorkspaceAction::ShowTeamSwitcherMenu);
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(action.clone());
         })
         .finish();
 
@@ -7235,7 +7421,9 @@ impl Workspace {
     fn save_current_tab_as_new_config(&mut self, tab_index: usize, ctx: &mut ViewContext<Self>) {
         use crate::tab_configs::session_config::{tab_config_from_pane_snapshot, write_tab_config};
 
-        let tab = &self.tabs[tab_index];
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return;
+        };
         let snapshot = tab.pane_group.as_ref(ctx).snapshot(ctx);
         let custom_title = tab.pane_group.as_ref(ctx).custom_title(ctx);
         let color = tab.color();
@@ -7346,6 +7534,18 @@ impl Workspace {
         if let Some(group) = self.tab_groups.get_mut(&group_id) {
             group.collapsed = false;
             ctx.notify();
+        }
+    }
+
+    pub(crate) fn is_inline_rename_editor_focused(&self, ctx: &AppContext) -> bool {
+        match ctx.focused_view_id(self.window_id) {
+            Some(id) if id == self.tab_rename_editor.id() => {
+                self.current_workspace_state.is_tab_being_renamed()
+            }
+            Some(id) if id == self.tab_group_rename_editor.id() => self
+                .current_workspace_state
+                .is_any_tab_group_being_renamed(),
+            _ => false,
         }
     }
 
@@ -8202,6 +8402,7 @@ impl Workspace {
         AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
             auth_manager.set_user_onboarded(ctx);
         });
+        mark_hoa_onboarding_completed(ctx);
     }
 
     /// If the user is new and therefore has not seen the in app onboarding,
@@ -8234,6 +8435,7 @@ impl Workspace {
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
                 auth_manager.set_user_onboarded(ctx);
             });
+            mark_hoa_onboarding_completed(ctx);
 
             return true;
         }
@@ -9429,9 +9631,11 @@ impl Workspace {
         self.current_workspace_state.is_agent_management_view_open = is_open;
         let window_id = self.window_id;
         let view_id = self.agent_management_view.id();
-        AgentConversationsModel::handle(ctx).update(ctx, |model, ctx| {
+        let team_context_resolver =
+            UserWorkspaces::team_context_resolver(self.agent_management_view.downgrade());
+        AgentConversationsModel::handle(ctx).update(ctx, move |model, ctx| {
             if is_open {
-                model.register_view_open(window_id, view_id, ctx);
+                model.register_view_open(window_id, view_id, team_context_resolver, ctx);
             } else {
                 model.register_view_closed(window_id, view_id, ctx);
             }
@@ -10025,6 +10229,7 @@ impl Workspace {
                 self.show_tab_group_right_click_menu = None;
                 self.show_tab_selection_right_click_menu = None;
                 self.hide_move_to_group_sidecar(ctx);
+                self.focus_active_tab(ctx);
                 ctx.notify();
             }
             MenuEvent::ItemHovered | MenuEvent::ItemSelected => {
@@ -11984,6 +12189,7 @@ impl Workspace {
         } else {
             let matching = self.vertical_tabs_panel.matching_tab_indices(
                 &self.tabs,
+                &self.tab_groups,
                 self.active_tab_index,
                 ctx,
             );
@@ -12008,6 +12214,7 @@ impl Workspace {
         } else {
             let matching = self.vertical_tabs_panel.matching_tab_indices(
                 &self.tabs,
+                &self.tab_groups,
                 self.active_tab_index,
                 ctx,
             );
@@ -15399,11 +15606,15 @@ impl Workspace {
             | AuthSecretFtuxViewEvent::Created { harness, name } => {
                 let harness = *harness;
                 let name = name.clone();
+                let team_scope = UserWorkspaces::as_ref(ctx).team_context_for_operation(ctx);
                 CloudAgentSettings::handle(ctx).update(ctx, |settings, ctx| {
                     settings.mark_harness_auth_ftux_completed(harness, ctx);
-                    let mut map = settings.last_selected_auth_secret.value().clone();
-                    map.insert(harness.config_name().to_string(), name);
-                    let _ = settings.last_selected_auth_secret.set_value(map, ctx);
+                    settings.persist_auth_secret_preference(
+                        &team_scope,
+                        harness,
+                        Some(AuthSecretPreference::Named(name)),
+                        ctx,
+                    );
                 });
                 me.dismiss_create_auth_secret_modal(ctx);
             }
@@ -15832,6 +16043,7 @@ impl Workspace {
             forked_conversation_id,
             title,
             request,
+            team_scope,
             cancel,
         } = materialization;
         let local_fork = source_conversation
@@ -15902,7 +16114,7 @@ impl Workspace {
         }
         model_handle.update(ctx, |model, ctx| {
             model.set_environment_id(presentation.environment_id, ctx);
-            model.begin_local_to_cloud_handoff(request, cancel, ctx);
+            model.begin_local_to_cloud_handoff(request, team_scope, cancel, ctx);
         });
 
         if let Ok(mut slot) = model_slot.lock() {
@@ -16149,6 +16361,9 @@ impl Workspace {
                 self.pending_session_config_tab_config_chip = false;
                 self.show_session_config_tab_config_chip = false;
                 self.pending_session_config_tab_config_chip_tutorial = None;
+                OneTimeModalModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.set_onboarding_tutorial_active(false, ctx);
+                });
                 ctx.notify();
             }
             pane_group::Event::InvalidatedActiveConversation => {
@@ -17296,6 +17511,15 @@ impl Workspace {
             return;
         }
 
+        if query_filter.is_none()
+            && let Some(terminal_view_handle) = self.active_session_view(ctx)
+            && terminal_view_handle.update(ctx, |terminal_view, ctx| {
+                terminal_view.maybe_trigger_external_ctrl_r_history_search(ctx)
+            })
+        {
+            return;
+        }
+
         // Close all overlays including chip menus before opening command search
         self.close_all_overlays(ctx);
 
@@ -17370,6 +17594,34 @@ impl Workspace {
             ctx.focus(&self.command_search_view);
         } else {
             report_error!("Command search keybinding triggered but no session is active!");
+        }
+    }
+
+    /// If the active session's shell has rebound ctrl-t to an external file-search widget
+    /// (e.g. fzf), hands the keypress off to it.
+    fn trigger_external_ctrl_t_file_search(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.is_readonly_shared_session_active(ctx) {
+            return;
+        }
+        if let Some(terminal_view_handle) = self.active_session_view(ctx) {
+            terminal_view_handle.update(ctx, |terminal_view, ctx| {
+                if !terminal_view.maybe_trigger_external_ctrl_t_file_search(ctx) {
+                    terminal_view.write_user_bytes_to_pty(vec![C0::DC4], ctx);
+                }
+            });
+        }
+    }
+
+    fn trigger_external_alt_c_directory_search(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.is_readonly_shared_session_active(ctx) {
+            return;
+        }
+        if let Some(terminal_view_handle) = self.active_session_view(ctx) {
+            terminal_view_handle.update(ctx, |terminal_view, ctx| {
+                if !terminal_view.maybe_trigger_external_alt_c_directory_search(ctx) {
+                    terminal_view.write_user_bytes_to_pty(vec![C0::ESC, b'c'], ctx);
+                }
+            });
         }
     }
 
@@ -18169,6 +18421,12 @@ impl Workspace {
             WindowSettingsChangedEvent::BackgroundOpacity { .. } => {
                 ctx.notify();
             }
+            WindowSettingsChangedEvent::BackgroundBackdrop { .. } => {
+                let backdrop = *WindowSettings::as_ref(ctx).background_backdrop;
+                if let Some(window) = ctx.windows().platform_window(ctx.window_id()) {
+                    window.set_background_backdrop(backdrop);
+                }
+            }
             WindowSettingsChangedEvent::LeftPanelVisibilityAcrossTabs { .. } => {
                 if self.left_panel_visibility_across_tabs_enabled(ctx) {
                     self.left_panel_open = self
@@ -18637,6 +18895,17 @@ impl Workspace {
     ) {
         self.close_all_overlays(ctx);
         self.open_settings_pane(section, Some(search_query), ctx);
+    }
+    fn browse_teams(&mut self, ctx: &mut ViewContext<Self>) {
+        let show_join_modal = UserWorkspaces::as_ref(ctx)
+            .team_for_window(self.window_id)
+            .is_some();
+        self.show_settings_with_section(Some(SettingsSection::Teams), ctx);
+        if show_join_modal {
+            self.settings_pane.update(ctx, |view, ctx| {
+                view.open_teams_page_join_modal(ctx);
+            });
+        }
     }
 
     /// Opens the team settings page and fills the invite field with the given email. This is used when linking directing to
@@ -19110,6 +19379,22 @@ impl Workspace {
         });
         self.focus_active_tab(ctx);
         ctx.notify();
+    }
+
+    fn handle_chatgpt_plan_modal_event(
+        &mut self,
+        event: &ChatGPTPlanModalEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            ChatGPTPlanModalEvent::Close => {
+                OneTimeModalModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.mark_chatgpt_plan_modal_dismissed(ctx);
+                });
+                self.focus_active_tab(ctx);
+                ctx.notify();
+            }
+        }
     }
 
     fn handle_oz_launch_modal_event(
@@ -21264,10 +21549,6 @@ impl Workspace {
         appearance: &Appearance,
         ctx: &AppContext,
     ) {
-        if let Some(pill) = self.render_team_switcher_pill(appearance, ctx) {
-            target.add_child(pill);
-        }
-
         if let Some(update_pill) = self.render_tab_overflow_menu(ctx, appearance) {
             target.add_child(
                 Container::new(update_pill)
@@ -21309,6 +21590,10 @@ impl Workspace {
                 .with_margin_left(TAB_BAR_PADDING_LEFT)
                 .finish(),
             );
+        }
+
+        if let Some(pill) = self.render_team_switcher_pill(appearance, ctx) {
+            target.add_child(pill);
         }
 
         if FeatureFlag::AvatarInTabBar.is_enabled() {
@@ -23094,10 +23379,6 @@ impl Workspace {
             context.set.insert(flags::OPEN_WINDOWS_AT_CUSTOM_SIZE_FLAG);
         }
 
-        if *window_settings.background_blur_texture {
-            context.set.insert(flags::WINDOW_BLUR_TEXTURE_FLAG);
-        }
-
         if *window_settings.left_panel_visibility_across_tabs {
             context
                 .set
@@ -23644,6 +23925,10 @@ impl Workspace {
 
     fn focus_auto_handoff_sleep_modal(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.focus(&self.auto_handoff_sleep_modal);
+    }
+
+    fn focus_chatgpt_plan_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.focus(&self.chatgpt_plan_modal);
     }
 
     fn open_tab_and_focus_oz_launch_modal(&mut self, ctx: &mut ViewContext<Self>) {
@@ -24411,6 +24696,8 @@ impl TypedActionView for Workspace {
                 filter,
                 init_content,
             }) => self.show_command_search(*filter, init_content, ctx),
+            TriggerExternalCtrlTFileSearch => self.trigger_external_ctrl_t_file_search(ctx),
+            TriggerExternalAltCDirectorySearch => self.trigger_external_alt_c_directory_search(ctx),
             ImportToPersonalDrive => {
                 if let Some(personal_drive) = UserWorkspaces::as_ref(ctx).personal_drive(ctx) {
                     self.open_import_modal(personal_drive, &None, ctx);
@@ -25793,6 +26080,25 @@ impl TypedActionView for Workspace {
                 ctx.notify();
             }
             #[cfg(debug_assertions)]
+            OpenChatGPTPlanModal => {
+                OneTimeModalModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.force_open_chatgpt_plan_modal(ctx);
+                });
+                ctx.notify();
+            }
+            #[cfg(debug_assertions)]
+            ResetChatGPTPlanModalState => {
+                AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                    if let Err(e) = ai_settings
+                        .did_show_chatgpt_plan_modal
+                        .set_value(false, ctx)
+                    {
+                        log::warn!("Failed to reset ChatGPT plan modal shown setting: {e}");
+                    }
+                });
+                log::info!("ChatGPT plan modal shown state has been reset");
+            }
+            #[cfg(debug_assertions)]
             ResetAutoHandoffSleepModalState => {
                 let old_value = *AISettings::as_ref(ctx).did_show_auto_handoff_sleep_modal;
                 AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
@@ -26272,23 +26578,38 @@ impl TypedActionView for Workspace {
                 TeamUpdateManager::handle(ctx).update(ctx, |manager, ctx| {
                     std::mem::drop(manager.refresh_workspace_metadata(ctx));
                 });
-                let existing_window_id = ctx
-                    .windows()
-                    .ordered_window_ids()
-                    .into_iter()
-                    .chain(ctx.window_ids())
-                    .find(|window_id| {
-                        UserWorkspaces::as_ref(ctx).team_uid_for_window(*window_id)
-                            == Some(team_uid)
+                #[cfg(target_family = "wasm")]
+                {
+                    // WASM hosts a single window; creating another replaces #wasm-container
+                    // and orphans the live session.
+                    UserWorkspaces::handle(ctx).update(ctx, |user_workspaces, ctx| {
+                        user_workspaces.switch_window_to_team(self.window_id, team_uid, ctx);
                     });
-                if let Some(window_id) = existing_window_id {
-                    ctx.windows().show_window_and_focus_app(window_id);
-                } else {
-                    crate::root_view::open_new_with_workspace_source(
-                        NewWorkspaceSource::TeamSwitched { team_uid },
-                        ctx,
-                    );
+                    ctx.notify();
                 }
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let existing_window_id = ctx
+                        .windows()
+                        .ordered_window_ids()
+                        .into_iter()
+                        .chain(ctx.window_ids())
+                        .find(|window_id| {
+                            UserWorkspaces::as_ref(ctx).team_uid_for_window(*window_id)
+                                == Some(team_uid)
+                        });
+                    if let Some(window_id) = existing_window_id {
+                        ctx.windows().show_window_and_focus_app(window_id);
+                    } else {
+                        crate::root_view::open_new_with_workspace_source(
+                            NewWorkspaceSource::TeamSwitched { team_uid },
+                            ctx,
+                        );
+                    }
+                }
+            }
+            BrowseTeams => {
+                self.browse_teams(ctx);
             }
             ShowTeamSwitcherMenu => {
                 self.show_team_switcher_dropdown(ctx);
@@ -26510,6 +26831,9 @@ impl View for Workspace {
             .focused_session_view(app)
         {
             let terminal_view = terminal_view.as_ref(app);
+            if terminal_view.external_alt_c_binding_eligible(app) {
+                context.set.insert(EXTERNAL_ALT_C_BINDING_CONTEXT);
+            }
             if terminal_view.is_long_running() {
                 context.set.insert("LongRunningCommand");
             }
@@ -26528,7 +26852,10 @@ impl View for Workspace {
         }
 
         #[cfg(target_family = "wasm")]
-        if self.is_conversation_transcript_viewer_focused(app) {
+        if matches!(
+            self.get_simplified_wasm_tab_bar_content(app),
+            Some(SimplifiedWasmTabBarContent::ConversationTranscript { .. })
+        ) {
             context.set.insert("Workspace_CloudConversationWebViewer");
         }
 
@@ -27309,6 +27636,10 @@ impl View for Workspace {
 
         if should_show_modal && one_time_modal_model.is_auto_handoff_sleep_modal_open() {
             stack.add_child(ChildView::new(&self.auto_handoff_sleep_modal).finish());
+        }
+
+        if should_show_modal && one_time_modal_model.is_chatgpt_plan_modal_open() {
+            stack.add_child(ChildView::new(&self.chatgpt_plan_modal).finish());
         }
 
         if should_show_modal && one_time_modal_model.is_free_ai_removal_modal_open() {
