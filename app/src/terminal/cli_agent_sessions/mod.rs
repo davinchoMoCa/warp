@@ -186,8 +186,8 @@ impl CLIAgentSession {
         self.received_rich_notification
     }
 
-    /// Whether the session is waiting on input the agent could not describe, so nothing
-    /// should be typed into its terminal.
+    /// Whether the session is blocked on a `NeedsInput` notification, so nothing should be
+    /// typed into its terminal.
     pub fn is_blocked_on_needs_input(&self) -> bool {
         matches!(self.status, CLIAgentSessionStatus::Blocked { .. })
             && self.session_context.blocked_on_needs_input
@@ -262,10 +262,12 @@ impl CLIAgentSession {
                     .clone()
                     .or_else(|| Some("Waiting for your answer".to_owned())),
             },
-            // The notification text is deliberately dropped: it can contain arbitrary dialog
-            // content and becomes the task status message reported to the server.
             CLIAgentEventType::NeedsInput => CLIAgentSessionStatus::Blocked {
-                message: Some(NEEDS_INPUT_STATUS_MESSAGE.to_owned()),
+                message: event
+                    .payload
+                    .summary
+                    .clone()
+                    .or_else(|| Some(NEEDS_INPUT_STATUS_MESSAGE.to_owned())),
             },
             CLIAgentEventType::PermissionReplied => {
                 if !matches!(self.status, CLIAgentSessionStatus::Blocked { .. }) {

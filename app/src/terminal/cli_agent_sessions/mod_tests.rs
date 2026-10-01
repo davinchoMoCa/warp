@@ -119,6 +119,7 @@ fn parse_agent_needs_input_notification() {
     let notif = parse_event(Some("warp://cli-agent"), body).unwrap();
 
     assert_eq!(notif.event, CLIAgentEventType::NeedsInput);
+    assert_eq!(notif.payload.summary.as_deref(), Some("Some dialog text"));
 }
 
 #[test]
@@ -713,12 +714,12 @@ fn permission_request_still_populates_summary_and_tool_fields() {
 }
 
 #[test]
-fn needs_input_blocks_session_with_generic_message() {
+fn needs_input_blocks_session_with_the_event_summary() {
     let mut session = cli_agent_session(CLIAgentSessionStatus::InProgress, true);
 
     let event = CLIAgentEvent {
         payload: CLIAgentEventPayload {
-            summary: Some("Arbitrary dialog text that must not be reported".to_owned()),
+            summary: Some("Some dialog text".to_owned()),
             ..Default::default()
         },
         ..rich_event(CLIAgentEventType::NeedsInput)
@@ -727,10 +728,23 @@ fn needs_input_blocks_session_with_generic_message() {
     let new_status = session.apply_event(&event);
 
     let expected = CLIAgentSessionStatus::Blocked {
-        message: Some("Agent requires user input".to_owned()),
+        message: Some("Some dialog text".to_owned()),
     };
     assert_eq!(new_status, Some(expected.clone()));
     assert_eq!(session.status, expected);
+    assert!(session.is_blocked_on_needs_input());
+}
+
+#[test]
+fn needs_input_without_a_summary_blocks_session_with_the_generic_message() {
+    let mut session = cli_agent_session(CLIAgentSessionStatus::InProgress, true);
+
+    let new_status = session.apply_event(&rich_event(CLIAgentEventType::NeedsInput));
+
+    let expected = CLIAgentSessionStatus::Blocked {
+        message: Some("Agent requires user input".to_owned()),
+    };
+    assert_eq!(new_status, Some(expected));
     assert!(session.is_blocked_on_needs_input());
 }
 
