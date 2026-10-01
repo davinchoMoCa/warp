@@ -334,6 +334,8 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           case "$entry" in
             '') entry=. ;;
             '~' | '~/'*) entry="$HOME${entry:1}" ;;
+            '~+' | '~+'/*) [[ -n "$PWD" ]] && entry="$PWD${entry:2}" ;;
+            '~-' | '~-'/*) [[ -n "$OLDPWD" ]] && entry="$OLDPWD${entry:2}" ;;
             '~'*)
               local username="${entry:1}"
               username="${username%%/*}"

@@ -522,6 +522,10 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
             std::fs::create_dir(home.join("say\"hi")).expect("double-quote directory fixture");
             std::fs::create_dir(home.join("back\\slash")).expect("backslash directory fixture");
             std::fs::create_dir_all(home.join("cdroot/cdonly")).expect("CDPATH fixture");
+            std::fs::create_dir_all(home.join("pwdroot/cdplus"))
+                .expect("current-directory CDPATH fixture");
+            std::fs::create_dir_all(home.join("oldroot/cdminus"))
+                .expect("previous-directory CDPATH fixture");
             std::fs::write(home.join("foofile"), "").expect("file fixture");
             #[cfg(unix)]
             std::os::unix::fs::symlink(home.join("foobar"), home.join("linkdir"))
@@ -530,7 +534,8 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
                 &home,
                 r#"
                 cd "$HOME"
-                CDPATH='~/cdroot'
+                OLDPWD="$HOME/oldroot"
+                CDPATH='~/cdroot:~+/pwdroot:~-'
                 _warp_test_cd() {
                   case "${COMP_WORDS[COMP_CWORD]}" in
                     fo*) COMPREPLY=( foobar ) ;;
@@ -540,6 +545,8 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
                     say*) COMPREPLY=( 'say"hi' ) ;;
                     back*) COMPREPLY=( 'back\slash' ) ;;
                     cdonly*) COMPREPLY=( cdonly ) ;;
+                    cdplus*) COMPREPLY=( cdplus ) ;;
+                    cdminus*) COMPREPLY=( cdminus ) ;;
                   esac
                 }
                 complete -F _warp_test_cd cd
@@ -573,6 +580,8 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
             r"cd quoted\ dir/",
         ))
         .with_steps(bash_native_completion_input("cd cdonly", "cd cdonly/"))
+        .with_steps(bash_native_completion_input("cd cdplus", "cd cdplus/"))
+        .with_steps(bash_native_completion_input("cd cdminus", "cd cdminus/"))
         .with_steps(bash_native_completion_input("cd don", r"cd don\'t/"))
         .with_steps(bash_native_completion_input("cd say", r#"cd say\"hi/"#))
         .with_steps(bash_native_completion_input("cd back", r"cd back\\slash/"))
