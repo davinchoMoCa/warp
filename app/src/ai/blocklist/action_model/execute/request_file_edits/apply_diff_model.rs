@@ -85,7 +85,7 @@ impl ApplyDiffModel {
                     background_executor,
                     auth_state,
                     passive_diff,
-                    |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+                    |path| async move { read_local_file(&path).await },
                 )
                 .await
             }
@@ -100,10 +100,33 @@ impl ApplyDiffModel {
     }
 }
 
-// ── Remote file reading ──────────────────────────────────────────────────────────
-
-/// Per-file byte limit for remote diff application (10 MB).
+/// Per-file byte limit for diff application (10 MB), enforced on both local and remote reads so
+/// a diff is never computed against truncated file content.
 const MAX_DIFF_READ_BYTES: u32 = 10_000_000;
+
+// ── Local file reading ───────────────────────────────────────────────────────────
+
+async fn read_local_file(path: &str) -> FileReadResult {
+    // Checking the size before reading leaves a TOCTOU window if the file grows between the
+    // two calls, but a diff produced from a file that grew past the cap mid-read is no worse
+    // than one produced a moment earlier, so it isn't worth closing.
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            let result: std::io::Result<String> = Err(err);
+            return FileReadResult::from(result);
+        }
+    };
+    if metadata.len() > u64::from(MAX_DIFF_READ_BYTES) {
+        return FileReadResult::ReadError(format!(
+            "File exceeds the {MAX_DIFF_READ_BYTES}-byte limit for diff application. The diff \
+             cannot be applied safely."
+        ));
+    }
+    FileReadResult::from(std::fs::read_to_string(path))
+}
+
+// ── Remote file reading ──────────────────────────────────────────────────────────
 
 async fn read_remote_file(
     handle: &remote_server::manager::HostRequestHandle,
@@ -126,8 +149,8 @@ async fn read_remote_file(
                 // applying the diff to partial content.
                 if fc.line_range_start.is_some() || fc.line_range_end.is_some() {
                     return FileReadResult::ReadError(format!(
-                        "File exceeds the {MAX_DIFF_READ_BYTES}-byte limit for remote diff \
-                         application and was truncated. The diff cannot be applied safely."
+                        "File exceeds the {MAX_DIFF_READ_BYTES}-byte limit for diff application \
+                         and was truncated. The diff cannot be applied safely."
                     ));
                 }
                 match fc.content {
@@ -157,3 +180,7 @@ async fn read_remote_file(
         Err(err) => FileReadResult::ReadError(format!("{err}")),
     }
 }
+
+#[cfg(test)]
+#[path = "apply_diff_model_tests.rs"]
+mod tests;
