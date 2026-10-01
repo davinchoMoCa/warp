@@ -122,6 +122,14 @@ pub enum UserWorkspacesEvent {
     SunsettedToBuildDataUpdated,
 }
 
+impl UserWorkspacesEvent {
+    /// Workspace membership and the current workspace can change billing policy, which gates voice
+    /// input.
+    pub(crate) fn affects_voice_transcription_options(&self) -> bool {
+        matches!(self, Self::TeamsChanged | Self::CurrentWorkspaceChanged)
+    }
+}
+
 /// UserWorkspaces is a singleton model that holds workspace metadata (name, members, etc).
 /// It should be used for getting information about the workspaces, teams, current teams,
 /// and all other things related to operating on workspace and team data.

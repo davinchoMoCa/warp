@@ -130,6 +130,9 @@ impl EditorView {
         if !UserWorkspaces::handle(ctx).as_ref(ctx).is_voice_enabled() {
             return;
         }
+        if self.voice_transcription_options == options {
+            return;
+        }
 
         log::debug!("update_voice_transcription_options: {options:?}");
         self.voice_transcription_options = options;

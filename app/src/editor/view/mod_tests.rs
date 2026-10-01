@@ -1,9 +1,16 @@
+#[cfg(feature = "voice_input")]
+use std::cell::Cell;
+#[cfg(feature = "voice_input")]
+use std::rc::Rc;
+
 use anyhow::Error;
 use itertools::Itertools;
 use pathfinder_geometry::vector::vec2f;
 use settings::ToggleableSetting;
 use unindent::Unindent;
 use warp_errors::report_if_error;
+#[cfg(feature = "voice_input")]
+use warpui::ViewHandle;
 use warpui::color::ColorU;
 use warpui::platform::WindowStyle;
 use warpui::text_layout::TextFrame;
@@ -22,6 +29,8 @@ use crate::test_util::settings::initialize_settings_for_tests;
 use crate::workspace::ToastStack;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspaces::user_workspaces::UserWorkspaces;
+#[cfg(feature = "voice_input")]
+use crate::workspaces::user_workspaces::UserWorkspacesEvent;
 
 impl EditorView {
     fn selected_ranges(&self, app: &AppContext) -> Vec<Range<DisplayPoint>> {
@@ -4678,6 +4687,67 @@ fn test_drag_and_drop_files_applies_path_transformer() {
             view.drag_and_drop_files(&paths(), ctx);
             assert_eq!(view.buffer_text(ctx), "/c/foo/bar /d/baz ");
         });
+    });
+}
+
+#[cfg(feature = "voice_input")]
+fn count_voice_state_updates(app: &mut App, editor: &ViewHandle<EditorView>) -> Rc<Cell<usize>> {
+    let updates = Rc::new(Cell::new(0usize));
+    let updates_for_sub = updates.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(editor, move |_, event, _| {
+            if matches!(event, Event::VoiceStateUpdated { .. }) {
+                updates_for_sub.set(updates_for_sub.get() + 1);
+            }
+        });
+    });
+    updates
+}
+
+#[cfg(feature = "voice_input")]
+#[test]
+fn repeated_identical_voice_options_do_not_emit_voice_state_updates() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new(Default::default(), ctx)
+        });
+        let updates = count_voice_state_updates(&mut app, &editor);
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.update_voice_transcription_options(VoiceTranscriptionOptions::Disabled, ctx);
+        });
+        let after_first = updates.get();
+        editor.update(&mut app, |editor, ctx| {
+            editor.update_voice_transcription_options(VoiceTranscriptionOptions::Disabled, ctx);
+        });
+
+        assert_eq!(updates.get(), after_first);
+    });
+}
+
+#[cfg(feature = "voice_input")]
+#[test]
+fn unrelated_user_workspaces_events_do_not_emit_voice_state_updates() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new(Default::default(), ctx)
+        });
+        let updates = count_voice_state_updates(&mut app, &editor);
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.update_voice_transcription_options(VoiceTranscriptionOptions::Disabled, ctx);
+        });
+        let after_sync = updates.get();
+
+        app.update(|ctx| {
+            UserWorkspaces::handle(ctx).update(ctx, |_workspaces, ctx| {
+                ctx.emit(UserWorkspacesEvent::EmailInviteSent);
+            });
+        });
+
+        assert_eq!(updates.get(), after_sync);
     });
 }
 
