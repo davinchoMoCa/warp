@@ -518,6 +518,9 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
             std::fs::create_dir(home.join("foobar")).expect("directory fixture");
             std::fs::create_dir(home.join("quoted dir")).expect("quoted directory fixture");
             std::fs::create_dir(home.join("tilde-folder")).expect("home directory fixture");
+            std::fs::create_dir(home.join("don't")).expect("apostrophe directory fixture");
+            std::fs::create_dir(home.join("say\"hi")).expect("double-quote directory fixture");
+            std::fs::create_dir(home.join("back\\slash")).expect("backslash directory fixture");
             std::fs::create_dir_all(home.join("cdroot/cdonly")).expect("CDPATH fixture");
             std::fs::write(home.join("foofile"), "").expect("file fixture");
             #[cfg(unix)]
@@ -527,12 +530,15 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
                 &home,
                 r#"
                 cd "$HOME"
-                CDPATH="$HOME/cdroot"
+                CDPATH='~/cdroot'
                 _warp_test_cd() {
                   case "${COMP_WORDS[COMP_CWORD]}" in
                     fo*) COMPREPLY=( foobar ) ;;
                     'quoted d'*) COMPREPLY=( 'quoted dir' ) ;;
                     '~/'*) COMPREPLY=( '~/tilde-folder' ) ;;
+                    don*) COMPREPLY=( "don't" ) ;;
+                    say*) COMPREPLY=( 'say"hi' ) ;;
+                    back*) COMPREPLY=( 'back\slash' ) ;;
                     cdonly*) COMPREPLY=( cdonly ) ;;
                   esac
                 }
@@ -566,11 +572,14 @@ pub fn test_bash_native_directory_completion_suffixes() -> Builder {
             r"cd quoted\ d",
             r"cd quoted\ dir/",
         ))
+        .with_steps(bash_native_completion_input("cd cdonly", "cd cdonly/"))
+        .with_steps(bash_native_completion_input("cd don", r"cd don\'t/"))
+        .with_steps(bash_native_completion_input("cd say", r#"cd say\"hi/"#))
+        .with_steps(bash_native_completion_input("cd back", r"cd back\\slash/"))
         .with_steps(bash_native_completion_input(
             "cd ~/ti",
             "cd ~/tilde-folder/",
         ))
-        .with_steps(bash_native_completion_input("cd cdonly", "cd cdonly/"))
         .with_steps(bash_native_completion_input(
             "warptool link",
             "warptool linkdir/",

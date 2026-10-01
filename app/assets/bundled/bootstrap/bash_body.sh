@@ -316,18 +316,13 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
       printf -v "$2" '%s' "$output"
     }
 
-    _warp_bash_completion_is_directory() {
-      local reply="$1" cmd="$2" current_word="$3" path_option="$4" token_quote="$5"
-      [[ "$reply" == */ ]] && return 1
-      [[ "$cmd" == cd || "$path_option" == 1 || "$reply" == */* || "$current_word" == */* ]] || return 1
-
-      local candidate
-      _warp_bash_unquote_completion_path "$reply" candidate
+    _warp_bash_completion_path_is_directory() {
+      local candidate="$1" cmd="$2" token_quote="$3"
       [[ -z "$candidate" || "$candidate" == */ ]] && return 1
       if [[ -d "$candidate" ]]; then
         return 0
       fi
-      if [[ "$reply" == '~'* && "$token_quote" != '"' && "$token_quote" != "'" &&
+      if [[ "$candidate" == '~'* && "$token_quote" != '"' && "$token_quote" != "'" &&
             ( "$candidate" == '~' || "$candidate" == '~/'* ) ]]; then
         [[ -d "$HOME${candidate:1}" ]] && return 0
       fi
@@ -336,8 +331,44 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         local -a cdpath_entries
         IFS=: read -ra cdpath_entries <<< "$CDPATH"
         for entry in "${cdpath_entries[@]}"; do
+          case "$entry" in
+            '') entry=. ;;
+            '~' | '~/'*) entry="$HOME${entry:1}" ;;
+            '~'*)
+              local username="${entry:1}"
+              username="${username%%/*}"
+              if [[ "$username" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]*$ ]]; then
+                local passwd_record home_directory
+                passwd_record="$(command -p getent passwd "$username" 2>/dev/null || command -p id -P "$username" 2>/dev/null)"
+                if [[ -n "$passwd_record" ]]; then
+                  # Darwin's id -P has more fields than getent; the home directory is penultimate.
+                  home_directory="${passwd_record%:*}"
+                  home_directory="${home_directory##*:}"
+                  [[ "$home_directory" == /* ]] && entry="$home_directory${entry:$((1 + ${#username}))}"
+                fi
+              fi
+              ;;
+          esac
           [[ -d "$entry/$candidate" ]] && return 0
         done
+      fi
+      return 1
+    }
+    _warp_bash_completion_is_directory() {
+      local reply="$1" cmd="$2" current_word="$3" path_option="$4" token_quote="$5" output_var="$6"
+      [[ "$reply" == */ ]] && return 1
+      [[ "$cmd" == cd || "$path_option" == 1 || "$reply" == */* || "$current_word" == */* ]] || return 1
+
+      if _warp_bash_completion_path_is_directory "$reply" "$cmd" "$token_quote"; then
+        printf -v "$output_var" '%s' "$reply"
+        return 0
+      fi
+      local decoded
+      _warp_bash_unquote_completion_path "$reply" decoded
+      if [[ "$decoded" != "$reply" ]] &&
+           _warp_bash_completion_path_is_directory "$decoded" "$cmd" "$token_quote"; then
+        printf -v "$output_var" '%s' "$decoded"
+        return 0
       fi
       return 1
     }
@@ -494,30 +525,25 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           reply_description="${BASH_REMATCH[3]}"
           reply="${BASH_REMATCH[1]}"
         fi
-        if _warp_bash_completion_is_directory "$reply" "$cmd" "${words[$cword]}" "$path_option" "$token_quote"; then
-          local candidate
-          _warp_bash_unquote_completion_path "$reply" candidate
-          if [[ "$reply" == "$candidate" ]]; then
-            if [[ "$token_quote" == '"' ]]; then
-              candidate="${candidate//\\/\\\\}"
-              candidate="${candidate//\$/\\\$}"
-              candidate="${candidate//\`/\\\`}"
-              candidate="${candidate//\"/\\\"}"
-              reply="\"$candidate\"/"
-            elif [[ "$token_quote" == "'" && "$candidate" != *"'"* ]]; then
-              reply="'$candidate'/"
-            else
-              if [[ "$candidate" == '~' ]]; then
-                reply='~'
-              elif [[ "$candidate" == '~/'* ]]; then
-                printf -v reply '%q' "${candidate:2}"
-                reply="~/$reply"
-              else
-                printf -v reply '%q' "$candidate"
-              fi
-              reply+="/"
-            fi
+        local candidate
+        if _warp_bash_completion_is_directory "$reply" "$cmd" "${words[$cword]}" "$path_option" "$token_quote" candidate; then
+          if [[ "$token_quote" == '"' ]]; then
+            candidate="${candidate//\\/\\\\}"
+            candidate="${candidate//\$/\\\$}"
+            candidate="${candidate//\`/\\\`}"
+            candidate="${candidate//\"/\\\"}"
+            reply="\"$candidate\"/"
+          elif [[ "$token_quote" == "'" && "$candidate" != *"'"* ]]; then
+            reply="'$candidate'/"
           else
+            if [[ "$candidate" == '~' ]]; then
+              reply='~'
+            elif [[ "$candidate" == '~/'* ]]; then
+              printf -v reply '%q' "${candidate:2}"
+              reply="~/$reply"
+            else
+              printf -v reply '%q' "$candidate"
+            fi
             reply+="/"
           fi
         fi
