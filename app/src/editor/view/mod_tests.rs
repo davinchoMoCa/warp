@@ -1,3 +1,8 @@
+#[cfg(feature = "voice_input")]
+use std::cell::Cell;
+#[cfg(feature = "voice_input")]
+use std::rc::Rc;
+
 use anyhow::Error;
 use itertools::Itertools;
 use pathfinder_geometry::vector::vec2f;
@@ -4739,7 +4744,7 @@ fn non_membership_workspace_events_leave_enabled_voice_options_unchanged() {
 fn unchanged_workspace_membership_does_not_recompute_voice_options() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let (_, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+        let (window_id, editor) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
             EditorView::new(Default::default(), ctx)
         });
 
@@ -4750,9 +4755,19 @@ fn unchanged_workspace_membership_does_not_recompute_voice_options() {
             );
         });
 
+        app.update(|_| {});
+        assert!(!app.has_window_invalidations(window_id));
+
+        let window_invalidated = Rc::new(Cell::new(false));
+        let window_invalidated_for_hook = window_invalidated.clone();
+        app.on_window_invalidated(window_id, move |_, _| {
+            window_invalidated_for_hook.set(true);
+        });
+
         emit_user_workspaces_event(&mut app, UserWorkspacesEvent::TeamsChanged);
         emit_user_workspaces_event(&mut app, UserWorkspacesEvent::CurrentWorkspaceChanged);
 
+        assert!(!window_invalidated.get());
         editor.read(&app, |editor, _| {
             assert_eq!(
                 editor.voice_transcription_options,
