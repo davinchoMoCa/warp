@@ -14,7 +14,9 @@ use vec1::Vec1;
 use warpui::r#async::BoxFuture;
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity as _};
 
-use super::diff_application::{DiffApplicationError, FileReadResult, apply_edits};
+use super::diff_application::{
+    DiffApplicationError, FileReadResult, MAX_DIFF_READ_BYTES, apply_edits, read_local_file,
+};
 use crate::ai::agent::{AIIdentifiers, FileEdit};
 use crate::ai::blocklist::SessionContext;
 use crate::auth::AuthStateProvider;
@@ -100,34 +102,6 @@ impl ApplyDiffModel {
     }
 }
 
-/// Per-file byte limit for diff application (10 MB), enforced on both local and remote reads so
-/// a diff is never computed against truncated file content.
-const MAX_DIFF_READ_BYTES: u32 = 10_000_000;
-
-// ── Local file reading ───────────────────────────────────────────────────────────
-
-async fn read_local_file(path: &str) -> FileReadResult {
-    // Checking the size before reading leaves a TOCTOU window if the file grows between the
-    // two calls, but a diff produced from a file that grew past the cap mid-read is no worse
-    // than one produced a moment earlier, so it isn't worth closing.
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(err) => {
-            let result: std::io::Result<String> = Err(err);
-            return FileReadResult::from(result);
-        }
-    };
-    if metadata.len() > u64::from(MAX_DIFF_READ_BYTES) {
-        return FileReadResult::ReadError(format!(
-            "File exceeds the {MAX_DIFF_READ_BYTES}-byte limit for diff application. The diff \
-             cannot be applied safely."
-        ));
-    }
-    FileReadResult::from(std::fs::read_to_string(path))
-}
-
-// ── Remote file reading ──────────────────────────────────────────────────────────
-
 async fn read_remote_file(
     handle: &remote_server::manager::HostRequestHandle,
     path: &str,
@@ -180,7 +154,3 @@ async fn read_remote_file(
         Err(err) => FileReadResult::ReadError(format!("{err}")),
     }
 }
-
-#[cfg(test)]
-#[path = "apply_diff_model_tests.rs"]
-mod tests;
