@@ -470,6 +470,7 @@ pub enum CLIAgentType {
     Vibe,
     Antigravity,
     Grok,
+    Kiro,
     /// Warp's own headless TUI, targeted by the code review panel as a CLI-agent-equivalent destination.
     WarpTui,
     Unknown,
@@ -999,6 +1000,7 @@ pub enum AIAgentInput {
     EventsFromAgents { event_count: usize },
     PassiveSuggestionResult,
     OrchestrationConfigUpdate,
+    AgentWake,
 }
 
 impl From<FullAIAgentInput> for AIAgentInput {
@@ -1039,6 +1041,7 @@ impl From<FullAIAgentInput> for AIAgentInput {
             },
             FullAIAgentInput::PassiveSuggestionResult { .. } => Self::PassiveSuggestionResult,
             FullAIAgentInput::OrchestrationConfigUpdate { .. } => Self::OrchestrationConfigUpdate,
+            FullAIAgentInput::AgentWake => Self::AgentWake,
         }
     }
 }

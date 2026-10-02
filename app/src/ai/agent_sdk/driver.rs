@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
 use ai::skills::{
     ParsedSkill, SKILL_PROVIDER_DEFINITIONS, SkillProvider, SkillScope, parse_bundled_skill,
     parse_skills_dirs_env, read_skills_for_skills_dirs, resolve_skills_dirs,
@@ -63,6 +62,7 @@ use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::ambient_agents::{
     AmbientAgentTaskId, AmbientConversationStatus, conversation_output_status_from_conversation,
 };
+use crate::ai::aws_credentials::BedrockOidcCredentialsConfig;
 use crate::ai::bedrock_credentials;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::block::FinishReason;
@@ -95,6 +95,7 @@ use crate::server::server_api::ai::{AIClient, TaskGitCredentialsError, TaskStatu
 use crate::server::server_api::harness_support::{
     HarnessSupportClient, ResolvePromptAttachedSkill, ResolvePromptRequest,
 };
+use crate::server::team_scope::RequestTeamScope;
 use crate::terminal::cli_agent_sessions::plugin_manager::{
     CliAgentPluginManager, plugin_manager_for,
 };
@@ -103,7 +104,7 @@ use crate::terminal::cli_agent_sessions::{
 };
 use crate::terminal::model::BlockId;
 use crate::terminal::view::ConversationRestorationInNewPaneType;
-use crate::workspaces::user_workspaces::{ResolvedTeamScope, TeamScopeForCli, UserWorkspaces};
+use crate::workspaces::user_workspaces::{HeadlessTeamScope, ResolvedTeamScope, UserWorkspaces};
 use crate::workspaces::workspace::BillingMetadata;
 
 pub(crate) mod attachments;
@@ -140,7 +141,7 @@ async fn with_credential_refreshes<F, T>(
     run_future: F,
     git_task_id: Option<String>,
     ai_client: Arc<dyn AIClient>,
-    oidc_strategy: Option<(String, String, String)>,
+    bedrock_oidc_credentials: Option<(BedrockOidcCredentialsConfig, Option<RequestTeamScope>)>,
     foreground: &ModelSpawner<AgentDriver>,
 ) -> T
 where
@@ -155,9 +156,9 @@ where
     .fuse();
 
     let bedrock_refresh = async move {
-        match oidc_strategy {
-            Some((task_id, role_arn, region)) => {
-                bedrock_credentials::refresh_loop(task_id, role_arn, region, foreground).await
+        match bedrock_oidc_credentials {
+            Some((config, request_scope)) => {
+                bedrock_credentials::refresh_loop(config, request_scope, foreground).await
             }
             None => future::pending::<()>().await,
         }
@@ -495,8 +496,16 @@ impl<T: Clone + Send + 'static> DebugWindowController<T> {
 /// The code must stay `EnvironmentSetupFailed`: `TaskStatusMessage::is_environment_setup_failure`
 /// matches that variant alone, and the cloud-continuation resolver keys its no-CTA tombstone off
 /// that check.
-fn setup_failure_status_update(message: String) -> TaskStatusUpdate {
-    TaskStatusUpdate::with_error_code(message, PlatformErrorCode::EnvironmentSetupFailed)
+fn setup_failure_status_update(error: &AgentDriverError) -> TaskStatusUpdate {
+    match error {
+        AgentDriverError::SetupCommandFailed {
+            command, output, ..
+        } => error_classification::setup_command_status_update(error, command, output.as_deref()),
+        _ => TaskStatusUpdate::with_error_code(
+            error.to_string(),
+            PlatformErrorCode::EnvironmentSetupFailed,
+        ),
+    }
 }
 
 /// The post-failure debug window's deadline, `window` from now. Shared by
@@ -637,6 +646,8 @@ pub struct AgentDriverOptions {
     pub secrets: HashMap<String, ManagedSecretValue>,
     /// ID of the task being executed.
     pub task_id: Option<AmbientAgentTaskId>,
+    /// Server-owned experiments retained without client interpretation.
+    pub experimental: Option<serde_json::Map<String, serde_json::Value>>,
     /// Parent run ID for child orchestration flows, if this task was spawned by another run.
     pub parent_run_id: Option<String>,
     /// Whether the agent run should share its session.
@@ -664,8 +675,9 @@ pub struct AgentDriverOptions {
     pub selected_harness: Harness,
     /// Model config for the selected harness. Only used for non-Oz harnesses.
     pub third_party_harness_model_config: Option<HarnessModelConfig>,
-    /// Team scope assigned to a newly created local run's headless window.
-    pub team_scope: Option<TeamScopeForCli>,
+    /// Stable team scope assigned to this run and its headless window.
+    pub team_scope: Option<HeadlessTeamScope>,
+    pub(crate) bedrock_oidc_credentials: Option<BedrockOidcCredentialsConfig>,
     /// Whether to skip end-of-run snapshot upload.
     pub snapshot_disabled: Option<bool>,
     /// End-of-run snapshot upload timeout override.
@@ -711,6 +723,13 @@ pub struct AgentDriver {
 
     // The associated task ID for this agent run, if any.
     task_id: Option<AmbientAgentTaskId>,
+    #[allow(
+        dead_code,
+        reason = "the driver retains server-owned experiments without interpreting them"
+    )]
+    pub experimental: Option<serde_json::Map<String, serde_json::Value>>,
+    team_scope: Option<HeadlessTeamScope>,
+    bedrock_oidc_credentials: Option<BedrockOidcCredentialsConfig>,
 
     /// Harness adapter for the running agent. This is only set if:
     /// - The harness has started successfully.
@@ -937,6 +956,14 @@ pub enum AgentDriverError {
     EnvironmentNotFound(String),
     #[error("Environment setup failed: {0}")]
     EnvironmentSetupFailed(String),
+    #[error("Environment setup failed: {message}")]
+    SetupCommandFailed {
+        message: String,
+        command: String,
+        output: Option<String>,
+    },
+    #[error("Environment setup failed: {message}")]
+    SetupCommandTimedOut { message: String },
     #[error("Cloud provider setup failed")]
     CloudProviderSetupFailed(#[from] cloud_provider::CloudProviderSetupError),
     #[error("Could not resolve working directory {}", path.display())]
@@ -1099,10 +1126,21 @@ impl From<warpui::ModelDropped> for AgentDriverError {
 
 impl From<PrepareEnvironmentError> for AgentDriverError {
     fn from(error: PrepareEnvironmentError) -> Self {
+        let message = error.to_string();
         match error {
             PrepareEnvironmentError::InvalidRuntimeState => AgentDriverError::InvalidRuntimeState,
             PrepareEnvironmentError::TerminalDriver { source } => source,
-            error => AgentDriverError::EnvironmentSetupFailed(error.to_string()),
+            PrepareEnvironmentError::SetupCommand { command, output } => {
+                AgentDriverError::SetupCommandFailed {
+                    message,
+                    command,
+                    output,
+                }
+            }
+            PrepareEnvironmentError::SetupCommandTimedOut { .. } => {
+                AgentDriverError::SetupCommandTimedOut { message }
+            }
+            _ => AgentDriverError::EnvironmentSetupFailed(message),
         }
     }
 }
@@ -1121,6 +1159,7 @@ impl AgentDriver {
         let AgentDriverOptions {
             working_dir,
             task_id,
+            experimental,
             parent_run_id,
             should_share,
             idle_on_complete,
@@ -1135,6 +1174,7 @@ impl AgentDriver {
             selected_harness,
             third_party_harness_model_config,
             team_scope,
+            bedrock_oidc_credentials,
             snapshot_disabled,
             snapshot_upload_timeout,
             snapshot_script_timeout,
@@ -1224,7 +1264,7 @@ impl AgentDriver {
                 should_share,
                 task_id,
                 conversation_restoration,
-                team_scope,
+                team_scope: team_scope.as_ref(),
             },
             ctx,
         )?;
@@ -1311,6 +1351,9 @@ impl AgentDriver {
             resolved_env_vars,
             output_format: OutputFormat::default(),
             task_id,
+            experimental,
+            team_scope,
+            bedrock_oidc_credentials,
             harness: None,
             idle_on_complete,
             idle_on_fail,
@@ -1363,6 +1406,9 @@ impl AgentDriver {
             resolved_env_vars: Arc::new(HashMap::new()),
             output_format: OutputFormat::default(),
             task_id: None,
+            experimental: None,
+            team_scope: None,
+            bedrock_oidc_credentials: None,
             harness: None,
             idle_on_complete: None,
             idle_on_fail: None,
@@ -1699,6 +1745,8 @@ impl AgentDriver {
                 if matches!(
                     err,
                     AgentDriverError::EnvironmentSetupFailed(_)
+                        | AgentDriverError::SetupCommandFailed { .. }
+                        | AgentDriverError::SetupCommandTimedOut { .. }
                         | AgentDriverError::SetupCommandExitedShell { .. }
                 ) {
                     let _ = foreground_for_error
@@ -2165,7 +2213,7 @@ impl AgentDriver {
         );
 
         let setup_span = tracing::info_span!("agent_run_setup", tags.cloud_agent = true);
-        let (setup_events, task_id_for_refresh, ai_client_for_refresh, oidc_strategy_for_refresh) =
+        let (setup_events, task_id_for_refresh, ai_client_for_refresh, bedrock_config_for_refresh) =
             async {
                 let (setup_events, environment_snapshot_reporter) = foreground
                     .spawn(|me, ctx| {
@@ -2231,24 +2279,8 @@ impl AgentDriver {
                     )
                     .await?;
 
-                // For the Oz harness only: set up MCP servers, model overrides, and profile information.
+                // For the Oz harness only: set up model overrides and profile information.
                 if matches!(&task.harness, HarnessKind::Oz) {
-                    let mcp_specs = task.mcp_specs.clone();
-                    let managed_mcp_client = foreground
-                        .spawn(|_, ctx| ServerApiProvider::as_ref(ctx).get_managed_mcp_client())
-                        .await?;
-
-                    let mcp_startup_result = setup_events
-                        .record_result(
-                            SetupStep::McpServerStartup,
-                            Self::start_task_mcp_servers(
-                                &mcp_specs,
-                                managed_mcp_client,
-                                &foreground,
-                            ),
-                        )
-                        .await;
-                    Self::handle_mcp_startup_result(mcp_startup_result, &foreground).await?;
                     let profile = task.profile.clone();
                     setup_events
                         .record_result(SetupStep::AgentProfileConfiguration, async {
@@ -2264,17 +2296,6 @@ impl AgentDriver {
                             .spawn(move |me, ctx| me.set_base_model_override(model_id, ctx))
                             .await??;
                     }
-
-                    let profile_mcp_startup_result = setup_events
-                        .record_result(SetupStep::ProfileMcpServerStartup, async {
-                            foreground
-                                .spawn(|me, ctx| me.start_profile_mcp_servers(ctx))
-                                .await?
-                                .await
-                        })
-                        .await;
-                    Self::handle_mcp_startup_result(profile_mcp_startup_result, &foreground)
-                        .await?;
                 }
 
                 // For all harnesses: wait for the shared session and prepare the environment.
@@ -2312,13 +2333,17 @@ impl AgentDriver {
                     repository_sources,
                     repository_preparation_overrides,
                     remove_repository_origins,
+                    session_shell_type,
                 ) = foreground
-                    .spawn(|me, _| {
+                    .spawn(|me, ctx| {
                         (
                             me.environment.clone(),
                             me.repository_sources.clone(),
                             me.repository_preparation_overrides.clone(),
                             me.remove_repository_origins,
+                            me.terminal_driver
+                                .as_ref(ctx)
+                                .active_session_shell_type(ctx),
                         )
                     })
                     .await?;
@@ -2329,7 +2354,10 @@ impl AgentDriver {
                 // The Factory definition checkout is run-scoped: the dispatch decides
                 // whether this run gets one by attaching the clone variables,
                 // independent of which environment the run executes in.
-                environment::prepend_factory_definition_clone(&mut setup_commands);
+                environment::prepend_factory_definition_clone(
+                    &mut setup_commands,
+                    session_shell_type,
+                );
                 let source_repos = repository_sources.eager_repos(environment_opt.as_ref())?;
                 if let Some(instruction) = environment::build_deferred_repos_instruction(
                     &foreground.spawn(|me, _| me.working_dir.clone()).await?,
@@ -2427,6 +2455,22 @@ impl AgentDriver {
                 } else {
                     environment_snapshot_reporter.report(EnvironmentSnapshot::empty());
                 }
+                if matches!(&task.harness, HarnessKind::Oz) {
+                    let managed_mcp_client = foreground
+                        .spawn(|_, ctx| ServerApiProvider::as_ref(ctx).get_managed_mcp_client())
+                        .await?;
+                    let mcp_startup_result = setup_events
+                        .record_result(
+                            SetupStep::McpServerStartup,
+                            Self::start_task_and_profile_mcp_servers(
+                                &task.mcp_specs,
+                                managed_mcp_client,
+                                &foreground,
+                            ),
+                        )
+                        .await;
+                    Self::handle_mcp_startup_result(mcp_startup_result, &foreground).await?;
+                }
 
                 // Skill loading is Oz-only; third-party harnesses have their own skill systems.
                 if matches!(&task.harness, HarnessKind::Oz) {
@@ -2463,7 +2507,7 @@ impl AgentDriver {
                     }
                 }
 
-                let (task_id_for_refresh, ai_client_for_refresh, oidc_strategy_for_refresh) =
+                let (task_id_for_refresh, ai_client_for_refresh, bedrock_config_for_refresh) =
                     foreground
                         .spawn(|me, ctx| {
                             let task_id = if FeatureFlag::GitCredentialRefresh.is_enabled() {
@@ -2472,22 +2516,13 @@ impl AgentDriver {
                                 None
                             };
                             let ai_client = ServerApiProvider::as_ref(ctx).get_ai_client().clone();
-                            // Capture OidcManaged strategy parameters for the proactive Bedrock credential
-                            // refresh loop. Only populated when Bedrock OIDC inference is configured.
-                            let oidc_strategy = match ApiKeyManager::handle(ctx)
-                                .as_ref(ctx)
-                                .aws_credentials_refresh_strategy()
-                            {
-                                AwsCredentialsRefreshStrategy::OidcManaged {
-                                    task_id,
-                                    role_arn,
-                                    region,
-                                } => task_id
-                                    .as_ref()
-                                    .map(|tid| (tid.clone(), role_arn.clone(), region.clone())),
-                                AwsCredentialsRefreshStrategy::LocalChain => None,
-                            };
-                            (task_id, ai_client, oidc_strategy)
+                            let bedrock_config =
+                                me.bedrock_oidc_credentials.clone().map(|config| {
+                                    let request_scope =
+                                        me.team_scope.as_ref().map(RequestTeamScope::from_scope);
+                                    (config, request_scope)
+                                });
+                            (task_id, ai_client, bedrock_config)
                         })
                         .await?;
 
@@ -2495,7 +2530,7 @@ impl AgentDriver {
                     setup_events,
                     task_id_for_refresh,
                     ai_client_for_refresh,
-                    oidc_strategy_for_refresh,
+                    bedrock_config_for_refresh,
                 ))
             }
             .instrument(setup_span)
@@ -2540,7 +2575,7 @@ impl AgentDriver {
                     },
                     task_id_for_refresh,
                     ai_client_for_refresh,
-                    oidc_strategy_for_refresh,
+                    bedrock_config_for_refresh,
                     &foreground,
                 )
                 .await?;
@@ -2593,7 +2628,7 @@ impl AgentDriver {
                     ),
                     task_id_for_refresh,
                     ai_client_for_refresh,
-                    oidc_strategy_for_refresh,
+                    bedrock_config_for_refresh,
                     &foreground,
                 )
                 .await
@@ -2618,6 +2653,13 @@ impl AgentDriver {
         stage: &str,
         error: &AgentDriverError,
     ) {
+        // The terminal may still be executing setup; do not retain it or accept debug turns.
+        if matches!(error, AgentDriverError::SetupCommandTimedOut { .. }) {
+            log::warn!(
+                "Environment setup lifecycle: event=timeout_teardown stage={stage} retention_skipped=true"
+            );
+            return;
+        }
         let idle_on_fail = match foreground.spawn(|me, _| me.idle_on_fail).await {
             Ok(idle_on_fail) => idle_on_fail,
             Err(spawn_error) => {
@@ -2841,7 +2883,6 @@ impl AgentDriver {
         error: &AgentDriverError,
         window: Duration,
     ) {
-        let message = error.to_string();
         let resolved = foreground
             .spawn(|me, ctx| {
                 me.task_id
@@ -2852,7 +2893,7 @@ impl AgentDriver {
             return;
         };
 
-        let status = setup_failure_status_update(message);
+        let status = setup_failure_status_update(error);
         let deadline = debug_window_deadline(window);
         if let Err(error) = ai_client
             .update_agent_task(

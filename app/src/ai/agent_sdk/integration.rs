@@ -110,6 +110,7 @@ impl IntegrationCommandRunner {
             let mut merged_config = super::config_file::merge_with_precedence(
                 loaded_file.as_ref(),
                 crate::ai::ambient_agents::AgentConfigSnapshot {
+                    experimental: None,
                     name: None,
                     environment_id: args.environment.environment.clone(),
                     // TODO(REMOTE-1936): support a runner for integrations.
@@ -427,6 +428,7 @@ impl IntegrationCommandRunner {
             let mut merged_config = super::config_file::merge_with_precedence(
                 loaded_file.as_ref(),
                 crate::ai::ambient_agents::AgentConfigSnapshot {
+                    experimental: None,
                     name: None,
                     environment_id: args.environment.environment.clone(),
                     // TODO(REMOTE-1936): support a runner for integrations.
