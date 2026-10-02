@@ -77,6 +77,24 @@ fn test_height() {
 }
 
 #[test]
+fn reset_temporary_blocks_empty_update_preserves_unchanged_content() {
+    let mut render_state = RenderState::new_for_test(
+        TEST_STYLES.clone(),
+        200.0.into_pixels(),
+        160.0.into_pixels(),
+    );
+    let mut content = SumTree::new();
+    content.push(laid_out_paragraph("line\n", &TEST_STYLES, 200.0));
+    render_state.set_content(content);
+
+    let original_content = render_state.content.borrow();
+    let original_summary = original_content.summary();
+    render_state.reset_temporary_block(HashMap::new());
+    assert_eq!(original_content.summary(), original_summary);
+    assert!(!original_content.summary().has_temporary_block);
+}
+
+#[test]
 fn reset_temporary_blocks_reuses_unaffected_subtrees() {
     let mut render_state = RenderState::new_for_test(
         TEST_STYLES.clone(),

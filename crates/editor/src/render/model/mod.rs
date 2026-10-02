@@ -3509,6 +3509,9 @@ impl RenderState {
 
     /// Replace all temporary blocks in the BlockItem cache with a new set of temporary
     fn reset_temporary_block(&self, blocks: HashMap<LineCount, Vec<BlockItem>>) {
+        if blocks.is_empty() && !self.content.borrow().summary().has_temporary_block {
+            return;
+        }
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
