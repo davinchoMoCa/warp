@@ -1,4 +1,4 @@
-use warpui::{AppContext, ModelHandle, SingletonEntity, View, ViewContext, ViewHandle, WindowId};
+use warpui::{AppContext, EntityId, ModelHandle, SingletonEntity, View, ViewContext, ViewHandle, WindowId};
 
 use super::view::PaneView;
 use super::{
@@ -8,6 +8,7 @@ use super::{
 use crate::app_state::{LeafContents, SettingsPaneSnapshot};
 use crate::settings_view::pane_manager::SettingsPaneManager;
 use crate::settings_view::{SettingsSection, SettingsView, SettingsViewEvent};
+use crate::workspace::PaneViewLocator;
 
 pub struct SettingsPane {
     view: ViewHandle<PaneView<SettingsView>>,
@@ -45,14 +46,33 @@ impl SettingsPane {
         Self::from_view(view, ctx)
     }
 
-    pub fn settings_view(&self, ctx: &AppContext) -> ViewHandle<SettingsView> {
+    pub(crate) fn settings_view(&self, ctx: &AppContext) -> ViewHandle<SettingsView> {
         self.view.as_ref(ctx).child(ctx)
+    }
+
+    pub(crate) fn pane_view_id(&self) -> EntityId {
+        self.view.id()
     }
 }
 
 impl PaneContent for SettingsPane {
     fn id(&self) -> PaneId {
         PaneId::from_settings_pane_view(&self.view)
+    }
+
+    fn pre_attach(&self, _group: &PaneGroup, ctx: &mut ViewContext<PaneGroup>) -> bool {
+        let incoming = PaneViewLocator {
+            pane_group_id: ctx.view_id(),
+            pane_id: self.id(),
+        };
+        if let Some(locator) = SettingsPaneManager::as_ref(ctx)
+            .find_pane(ctx.window_id())
+            .filter(|locator| *locator != incoming)
+        {
+            ctx.emit(crate::pane_group::Event::FocusPaneInWorkspace { locator });
+            return false;
+        }
+        true
     }
 
     fn attach(
@@ -62,6 +82,16 @@ impl PaneContent for SettingsPane {
         ctx: &mut ViewContext<PaneGroup>,
     ) {
         let pane_id = self.id();
+        let pane_group_id = ctx.view_id();
+        let window_id = ctx.window_id();
+        SettingsPaneManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.register_pane(self, pane_group_id, window_id, ctx);
+        });
+        if SettingsPaneManager::as_ref(ctx).find_pane(window_id)
+            != Some(PaneViewLocator { pane_group_id, pane_id })
+        {
+            return;
+        }
         self.view
             .update(ctx, |view, ctx| view.set_focus_handle(focus_handle, ctx));
 
@@ -74,11 +104,6 @@ impl PaneContent for SettingsPane {
             group.handle_pane_view_event(pane_id, event, ctx);
         });
 
-        let pane_group_id = ctx.view_id();
-        let window_id = ctx.window_id();
-        SettingsPaneManager::handle(ctx).update(ctx, |manager, ctx| {
-            manager.register_pane(self, pane_group_id, window_id, ctx);
-        });
     }
 
     fn detach(
