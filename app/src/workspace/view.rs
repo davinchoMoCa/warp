@@ -1834,9 +1834,12 @@ impl Workspace {
         });
 
         let window_id = ctx.window_id();
-        ctx.subscribe_to_model(&SettingsPaneManager::handle(ctx), |workspace, _, event, ctx| {
-            workspace.handle_settings_manager_event(event, ctx);
-        });
+        ctx.subscribe_to_model(
+            &SettingsPaneManager::handle(ctx),
+            |workspace, _, event, ctx| {
+                workspace.handle_settings_manager_event(event, ctx);
+            },
+        );
         SettingsPaneManager::handle(ctx).update(ctx, |manager, _| {
             manager.register_view(window_id, settings_pane.clone());
         });
@@ -1864,9 +1867,11 @@ impl Workspace {
             {
                 self.adopt_settings_view(view.clone(), ctx);
             }
-            SettingsPaneManagerEvent::ViewDeparted { window_id, view, retain_live_source }
-                if *window_id == ctx.window_id() && self.settings_pane == *view =>
-            {
+            SettingsPaneManagerEvent::ViewDeparted {
+                window_id,
+                view,
+                retain_live_source,
+            } if *window_id == ctx.window_id() && self.settings_pane == *view => {
                 if *retain_live_source {
                     // The transfer walk is collected before its hooks run. Move the shared subtree
                     // back only after that walk finishes so a hidden alias cannot steal a live pane.
@@ -1880,10 +1885,14 @@ impl Workspace {
                     self.adopt_settings_view(view, ctx);
                 }
             }
-            SettingsPaneManagerEvent::PaneCollision { window_id, keep, discard }
-                if *window_id == ctx.window_id() =>
-            {
-                if let Some(index) = self.tabs.iter()
+            SettingsPaneManagerEvent::PaneCollision {
+                window_id,
+                keep,
+                discard,
+            } if *window_id == ctx.window_id() => {
+                if let Some(index) = self
+                    .tabs
+                    .iter()
                     .position(|tab| tab.pane_group.id() == discard.pane_group_id)
                 {
                     let group = self.tabs[index].pane_group.clone();

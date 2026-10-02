@@ -96,7 +96,10 @@ impl SettingsPaneManager {
             pane_group_id,
             pane_id: pane.id(),
         };
-        if let Some(keep) = self.find_pane(window_id).filter(|existing| *existing != locator) {
+        if let Some(keep) = self
+            .find_pane(window_id)
+            .filter(|existing| *existing != locator)
+        {
             ctx.emit(SettingsPaneManagerEvent::PaneCollision {
                 window_id,
                 keep,
@@ -105,7 +108,9 @@ impl SettingsPaneManager {
             return;
         }
         let view = pane.settings_view(ctx);
-        let data = self.panes.get_mut(&window_id)
+        let data = self
+            .panes
+            .get_mut(&window_id)
             .expect("Window should have corresponding settings view");
         let changed = data.settings_view != view;
         data.settings_view = view.clone();

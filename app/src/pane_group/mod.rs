@@ -8310,7 +8310,10 @@ impl View for PaneGroup {
             self.shared_session_role_change_modal.id(),
             self.user_default_shell_changed_banner.id(),
         ];
-        children.extend(self.panes_of::<SettingsPane>().map(SettingsPane::pane_view_id));
+        children.extend(
+            self.panes_of::<SettingsPane>()
+                .map(SettingsPane::pane_view_id),
+        );
         children
     }
 
@@ -8430,23 +8433,36 @@ impl View for PaneGroup {
         new_window_id: WindowId,
         ctx: &mut ViewContext<Self>,
     ) {
-        let settings = self.panes_of::<SettingsPane>()
+        let settings = self
+            .panes_of::<SettingsPane>()
             .map(|pane| (pane.id(), pane.settings_view(ctx)))
             .collect_vec();
         for (pane_id, view) in settings {
-            let locator = PaneViewLocator { pane_group_id: ctx.view_id(), pane_id };
+            let locator = PaneViewLocator {
+                pane_group_id: ctx.view_id(),
+                pane_id,
+            };
             let hidden = self.is_pane_hidden_for_close(pane_id);
             let manager = SettingsPaneManager::handle(ctx);
             let retain_live_source = hidden
-                && manager.as_ref(ctx).find_pane(old_window_id)
+                && manager
+                    .as_ref(ctx)
+                    .find_pane(old_window_id)
                     .is_some_and(|live| live.pane_group_id != locator.pane_group_id)
                 && manager.as_ref(ctx).settings_view(old_window_id) == view;
             manager.update(ctx, |manager, ctx| {
-                manager.release_transferred_view(old_window_id, locator, view, retain_live_source, ctx);
+                manager.release_transferred_view(
+                    old_window_id,
+                    locator,
+                    view,
+                    retain_live_source,
+                    ctx,
+                );
             });
             if retain_live_source {
                 self.cleanup_closed_pane(pane_id, ctx);
-                UndoCloseStack::handle(ctx).update(ctx, |stack, _| stack.forget_closed_pane(locator));
+                UndoCloseStack::handle(ctx)
+                    .update(ctx, |stack, _| stack.forget_closed_pane(locator));
             } else if !hidden {
                 let pane = self.downcast_pane_by_id::<SettingsPane>(pane_id).unwrap();
                 manager.update(ctx, |manager, ctx| {

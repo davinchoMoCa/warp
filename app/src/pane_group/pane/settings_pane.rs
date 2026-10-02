@@ -1,4 +1,6 @@
-use warpui::{AppContext, EntityId, ModelHandle, SingletonEntity, View, ViewContext, ViewHandle, WindowId};
+use warpui::{
+    AppContext, EntityId, ModelHandle, SingletonEntity, View, ViewContext, ViewHandle, WindowId,
+};
 
 use super::view::PaneView;
 use super::{
@@ -88,7 +90,10 @@ impl PaneContent for SettingsPane {
             manager.register_pane(self, pane_group_id, window_id, ctx);
         });
         if SettingsPaneManager::as_ref(ctx).find_pane(window_id)
-            != Some(PaneViewLocator { pane_group_id, pane_id })
+            != Some(PaneViewLocator {
+                pane_group_id,
+                pane_id,
+            })
         {
             return;
         }
@@ -103,7 +108,6 @@ impl PaneContent for SettingsPane {
         ctx.subscribe_to_view(&self.view, move |group, _, event, ctx| {
             group.handle_pane_view_event(pane_id, event, ctx);
         });
-
     }
 
     fn detach(

@@ -1,7 +1,7 @@
 use warpui::App;
 
-use super::*;
 use super::tests::{initialize_app, mock_workspace};
+use super::*;
 use crate::editor::EditorView;
 use crate::pane_group::SettingsPane;
 
@@ -13,11 +13,15 @@ fn visible_settings(
         let locator = SettingsPaneManager::as_ref(ctx)
             .find_pane(workspace.window_id)
             .expect("a live Settings pane should be registered");
-        let group = workspace.get_pane_group_view_with_id(locator.pane_group_id)
-            .expect("Settings should belong to a tab in this window").as_ref(ctx);
+        let group = workspace
+            .get_pane_group_view_with_id(locator.pane_group_id)
+            .expect("Settings should belong to a tab in this window")
+            .as_ref(ctx);
         assert!(!group.is_pane_hidden_for_close(locator.pane_id));
-        let settings = group.downcast_pane_by_id::<SettingsPane>(locator.pane_id)
-            .unwrap().settings_view(ctx);
+        let settings = group
+            .downcast_pane_by_id::<SettingsPane>(locator.pane_id)
+            .unwrap()
+            .settings_view(ctx);
         (locator, settings)
     })
 }
@@ -34,7 +38,12 @@ fn detach_tab(
         let transferred = workspace.get_tab_transfer_info(tab_index, ctx).unwrap();
         workspace.prepare_for_transferred_tab_attach(&transferred.pane_group, ctx);
         let window_id = crate::root_view::create_transferred_window(
-            transferred, ctx.window_id(), vec2f(1000., 600.), Vector2F::zero(), false, ctx,
+            transferred,
+            ctx.window_id(),
+            vec2f(1000., 600.),
+            Vector2F::zero(),
+            false,
+            ctx,
         );
         workspace.remove_tab_without_undo(tab_index, ctx);
         workspace.set_suppress_detach_panes_on_window_close(false);
@@ -57,12 +66,21 @@ fn handoff_tab(
         workspace.prepare_for_transferred_tab_attach(&pane_group, ctx);
         CrossWindowTabDrag::handle(ctx).update(ctx, |drag, ctx| {
             drag.begin_single_tab_drag(
-                source_window, Vector2F::zero(), vec2f(1000., 600.), Vector2F::zero(),
-                false, vec2f(120., 34.),
+                source_window,
+                Vector2F::zero(),
+                vec2f(1000., 600.),
+                Vector2F::zero(),
+                false,
+                vec2f(120., 34.),
             );
             drag.execute_handoff_single_tab_to_other(
-                AttachTarget { window_id: target_window, insertion_index },
-                transferred, source_window, ctx,
+                AttachTarget {
+                    window_id: target_window,
+                    insertion_index,
+                },
+                transferred,
+                source_window,
+                ctx,
             );
         });
         workspace.remove_tab_without_undo(tab_index, ctx);
@@ -89,12 +107,16 @@ fn settings_transfer_source_reopens_after_destination_window_close() {
 
         let destination = detach_tab(&mut app, &source, 1);
         let destination_window = app.read(|ctx| destination.window_id(ctx));
-        assert_eq!(app.read(|ctx| moved_settings.window_id(ctx)), destination_window);
+        assert_eq!(
+            app.read(|ctx| moved_settings.window_id(ctx)),
+            destination_window
+        );
         app.update(|ctx| ctx.simulate_window_closed(destination_window));
         source.update(&mut app, |workspace, ctx| {
             workspace.handle_action(&WorkspaceAction::ShowSettings, ctx);
             workspace.handle_action(
-                &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance), ctx,
+                &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+                ctx,
             );
         });
 
@@ -126,13 +148,17 @@ fn settings_transfer_navigation_and_events_follow_repeated_handoffs() {
         let (locator, settings) = visible_settings(&source, &app);
 
         handoff_tab(&mut app, &source, &destination, 1);
-        assert_eq!(visible_settings(&destination, &app), (locator, settings.clone()));
+        assert_eq!(
+            visible_settings(&destination, &app),
+            (locator, settings.clone())
+        );
         destination.update(&mut app, |workspace, ctx| {
             workspace.handle_action(
                 &WorkspaceAction::ShowSettingsPageWithSearch {
                     search_query: "cursor".to_owned(),
                     section: Some(SettingsSection::Appearance),
-                }, ctx,
+                },
+                ctx,
             );
         });
         assert_eq!(
@@ -144,9 +170,14 @@ fn settings_transfer_navigation_and_events_follow_repeated_handoffs() {
                 .iter()
                 .filter_map(|id| ctx.view_with_id::<EditorView>(destination.window_id(ctx), *id))
                 .any(|editor| editor.as_ref(ctx).buffer_text(ctx) == "cursor"));
-            assert_eq!(SettingsPaneManager::as_ref(ctx).find_pane(source.window_id(ctx)), None);
+            assert_eq!(
+                SettingsPaneManager::as_ref(ctx).find_pane(source.window_id(ctx)),
+                None
+            );
         });
-        settings.update(&mut app, |_, ctx| ctx.emit(SettingsViewEvent::OpenMCPServerCollection));
+        settings.update(&mut app, |_, ctx| {
+            ctx.emit(SettingsViewEvent::OpenMCPServerCollection)
+        });
         assert_eq!(source.read(&app, |workspace, _| workspace.tab_count()), 1);
         assert_eq!(
             settings.read(&app, |settings, _| settings.current_settings_section()),
@@ -155,8 +186,13 @@ fn settings_transfer_navigation_and_events_follow_repeated_handoffs() {
 
         handoff_tab(&mut app, &destination, &source, 1);
         assert_eq!(visible_settings(&source, &app), (locator, settings.clone()));
-        settings.update(&mut app, |_, ctx| ctx.emit(SettingsViewEvent::OpenMCPServerCollection));
-        assert_eq!(destination.read(&app, |workspace, _| workspace.tab_count()), 1);
+        settings.update(&mut app, |_, ctx| {
+            ctx.emit(SettingsViewEvent::OpenMCPServerCollection)
+        });
+        assert_eq!(
+            destination.read(&app, |workspace, _| workspace.tab_count()),
+            1
+        );
         destination.update(&mut app, |workspace, ctx| {
             workspace.show_settings_with_section(Some(SettingsSection::BillingAndUsage), ctx);
         });
@@ -179,13 +215,22 @@ fn settings_transfer_collision_discards_the_incoming_settings_only_tab() {
 
         handoff_tab(&mut app, &source, &destination, 1);
 
-        assert_eq!(destination.read(&app, |workspace, _| workspace.tab_count()), 2);
+        assert_eq!(
+            destination.read(&app, |workspace, _| workspace.tab_count()),
+            2
+        );
         assert_eq!(visible_settings(&destination, &app), existing);
         assert!(app.read(|ctx| UndoCloseStack::as_ref(ctx).is_empty()));
         destination.read(&app, |workspace, ctx| {
-            assert_eq!(workspace.active_tab_pane_group().id(), existing.0.pane_group_id);
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                existing.0.pane_group_id
+            );
             assert_eq!(workspace.settings_pane, existing.1);
-            assert_eq!(existing.1.as_ref(ctx).current_settings_section(), SettingsSection::Appearance);
+            assert_eq!(
+                existing.1.as_ref(ctx).current_settings_section(),
+                SettingsSection::Appearance
+            );
         });
     });
 }
@@ -204,7 +249,9 @@ fn settings_transfer_collision_preserves_other_panes_without_undoing_the_duplica
             });
         });
         let incoming = visible_settings(&source, &app).0;
-        source.update(&mut app, |workspace, ctx| workspace.focus_pane(incoming, ctx));
+        source.update(&mut app, |workspace, ctx| {
+            workspace.focus_pane(incoming, ctx)
+        });
         destination.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
         let existing = visible_settings(&destination, &app);
 
@@ -215,7 +262,10 @@ fn settings_transfer_collision_preserves_other_panes_without_undoing_the_duplica
             assert!(!group.has_pane_id(incoming.pane_id));
             assert!(group.has_pane_id(group.focused_pane_id(ctx)));
         });
-        assert_eq!(destination.read(&app, |workspace, _| workspace.tab_count()), 3);
+        assert_eq!(
+            destination.read(&app, |workspace, _| workspace.tab_count()),
+            3
+        );
         assert_eq!(visible_settings(&destination, &app), existing);
         assert!(app.read(|ctx| UndoCloseStack::as_ref(ctx).is_empty()));
     });
@@ -239,27 +289,46 @@ fn settings_transfer_hidden_pane_is_adopted_only_when_undo_restores_it() {
 
         let transferred = handoff_tab(&mut app, &source, &destination, 1);
         app.read(|ctx| {
-            assert_eq!(SettingsPaneManager::as_ref(ctx).find_pane(source.window_id(ctx)), None);
-            assert_eq!(SettingsPaneManager::as_ref(ctx).find_pane(destination.window_id(ctx)), None);
+            assert_eq!(
+                SettingsPaneManager::as_ref(ctx).find_pane(source.window_id(ctx)),
+                None
+            );
+            assert_eq!(
+                SettingsPaneManager::as_ref(ctx).find_pane(destination.window_id(ctx)),
+                None
+            );
         });
-        assert!(transferred.read(&app, |group, _| group.is_pane_hidden_for_close(locator.pane_id)));
+        assert!(transferred.read(&app, |group, _| {
+            group.is_pane_hidden_for_close(locator.pane_id)
+        }));
         app.read(|ctx| assert_eq!(settings.window_id(ctx), destination.window_id(ctx)));
 
         undo_close(&mut app);
-        assert_eq!(visible_settings(&destination, &app), (locator, settings.clone()));
+        assert_eq!(
+            visible_settings(&destination, &app),
+            (locator, settings.clone())
+        );
         destination.update(&mut app, |workspace, ctx| {
             workspace.show_settings_with_section(Some(SettingsSection::Appearance), ctx);
         });
-        assert_eq!(settings.read(&app, |view, _| view.current_settings_section()), SettingsSection::Appearance);
+        assert_eq!(
+            settings.read(&app, |view, _| view.current_settings_section()),
+            SettingsSection::Appearance
+        );
 
-        transferred.update(&mut app, |group, ctx| group.close_pane(locator.pane_id, ctx));
+        transferred.update(&mut app, |group, ctx| {
+            group.close_pane(locator.pane_id, ctx)
+        });
         destination.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
         let existing = visible_settings(&destination, &app);
         undo_close(&mut app);
         assert_eq!(visible_settings(&destination, &app), existing);
         assert!(!transferred.read(&app, |group, _| group.has_pane_id(locator.pane_id)));
         destination.read(&app, |workspace, _| {
-            assert_eq!(workspace.active_tab_pane_group().id(), existing.0.pane_group_id);
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                existing.0.pane_group_id
+            );
         });
     });
 }
@@ -296,7 +365,10 @@ fn settings_transfer_discards_only_hidden_panes_aliasing_live_source_settings() 
             workspace.show_settings_with_section(Some(SettingsSection::BillingAndUsage), ctx);
         });
         assert_eq!(visible_settings(&source, &app), live);
-        assert_eq!(settings.read(&app, |view, _| view.current_settings_section()), SettingsSection::BillingAndUsage);
+        assert_eq!(
+            settings.read(&app, |view, _| view.current_settings_section()),
+            SettingsSection::BillingAndUsage
+        );
     });
 }
 
@@ -308,7 +380,9 @@ fn settings_transfer_preserves_same_window_close_reopen_and_tab_undo() {
         workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
         let original = visible_settings(&workspace, &app);
 
-        workspace.update(&mut app, |workspace, ctx| workspace.remove_tab(1, true, true, ctx));
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.remove_tab(1, true, true, ctx)
+        });
         undo_close(&mut app);
         assert_eq!(visible_settings(&workspace, &app), original);
         workspace.update(&mut app, |workspace, ctx| {
@@ -318,7 +392,12 @@ fn settings_transfer_preserves_same_window_close_reopen_and_tab_undo() {
         let reopened = visible_settings(&workspace, &app);
         assert_ne!(reopened.0, original.0);
         assert_eq!(reopened.1, original.1);
-        assert_eq!(reopened.1.read(&app, |view, _| view.current_settings_section()), SettingsSection::Appearance);
+        assert_eq!(
+            reopened
+                .1
+                .read(&app, |view, _| view.current_settings_section()),
+            SettingsSection::Appearance
+        );
     });
 }
 
@@ -341,9 +420,15 @@ fn settings_transfer_tab_undo_collision_keeps_destination_singleton() {
         assert_eq!(visible_settings(&destination, &app), existing);
         destination.read(&app, |workspace, ctx| {
             assert_eq!(workspace.tab_count(), 2);
-            assert_eq!(workspace.active_tab_pane_group().id(), existing.0.pane_group_id);
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                existing.0.pane_group_id
+            );
             assert_eq!(workspace.settings_pane, existing.1);
-            assert_eq!(existing.1.as_ref(ctx).current_settings_section(), SettingsSection::Appearance);
+            assert_eq!(
+                existing.1.as_ref(ctx).current_settings_section(),
+                SettingsSection::Appearance
+            );
         });
         assert!(app.read(|ctx| UndoCloseStack::as_ref(ctx).is_empty()));
     });
