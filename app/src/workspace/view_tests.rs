@@ -284,6 +284,218 @@ pub(crate) fn mock_workspace(app: &mut App) -> ViewHandle<Workspace> {
     workspace
 }
 
+fn settings_page_opened(
+    app: &App,
+    workspace: &ViewHandle<Workspace>,
+    section: SettingsSection,
+) -> impl std::future::Future<Output = ()> + use<> {
+    use warpui::r#async::FutureExt;
+
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    let mut sender = Some(sender);
+    let workspace = workspace.clone();
+    let window_id = workspace.read(app, |workspace, _| workspace.window_id);
+    app.on_window_invalidated(window_id, move |_, ctx| {
+        if workspace.try_as_ref(ctx).is_some_and(|workspace| {
+            workspace
+                .settings_pane
+                .try_as_ref(ctx)
+                .is_some_and(|settings| {
+                    settings.current_settings_section() == section
+                        && SettingsPaneManager::as_ref(ctx)
+                            .find_pane(window_id)
+                            .is_some()
+                })
+        }) && let Some(sender) = sender.take()
+        {
+            let _ = sender.send(());
+        }
+    });
+    async move {
+        receiver
+            .with_timeout(std::time::Duration::from_secs(5))
+            .await
+            .expect("settings navigation did not finish")
+            .expect("settings navigation notification was dropped");
+    }
+}
+
+#[test]
+fn settings_first_open_ignores_an_unavailable_workspace_settings_handle() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let stale = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        workspace.update(&mut app, |_, ctx| {
+            let view = ctx.add_typed_action_view(|ctx| SettingsView::new(None, ctx));
+            let window_id = ctx.window_id();
+            SettingsPaneManager::handle(ctx).update(ctx, |manager, _| {
+                manager.register_view(window_id, view);
+            });
+        });
+
+        stale.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_action(
+                    &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+                    ctx,
+                );
+            });
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tabs.len(), 2);
+            let settings = SettingsPaneManager::as_ref(ctx).settings_view(workspace.window_id);
+            assert_eq!(
+                settings.as_ref(ctx).current_settings_section(),
+                SettingsSection::Appearance
+            );
+        });
+    });
+}
+
+#[test]
+fn settings_widget_first_open_waits_for_the_settings_view_to_be_restored() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_action(
+                    &WorkspaceAction::ScrollToSettingsWidget {
+                        page: SettingsSection::Appearance,
+                        widget_id: "font_size",
+                    },
+                    ctx,
+                );
+            });
+        });
+        opened.await;
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tabs.len(), 2);
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                SettingsPaneManager::as_ref(ctx)
+                    .find_pane(workspace.window_id)
+                    .unwrap()
+                    .pane_group_id
+            );
+        });
+    });
+}
+
+#[test]
+fn settings_first_open_recreates_a_missing_settings_view() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let other_workspace = mock_workspace(&mut app);
+        let (other_window_id, missing) = other_workspace.read(&app, |workspace, _| {
+            (workspace.window_id, workspace.settings_pane.clone())
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.settings_pane = missing.clone();
+            let window_id = ctx.window_id();
+            SettingsPaneManager::handle(ctx).update(ctx, |manager, _| {
+                manager.register_view(window_id, missing.clone());
+            });
+        });
+        app.update(|ctx| ctx.simulate_window_closed(other_window_id));
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+                ctx,
+            );
+        });
+        opened.await;
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tabs.len(), 2);
+            assert_ne!(workspace.settings_pane.id(), missing.id());
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                SettingsPaneManager::as_ref(ctx)
+                    .find_pane(workspace.window_id)
+                    .unwrap()
+                    .pane_group_id
+            );
+        });
+    });
+}
+
+#[test]
+fn settings_page_switch_waits_for_the_existing_settings_view_to_be_restored() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_action(
+                    &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+                    ctx,
+                );
+            });
+        });
+        opened.await;
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tabs.len(), 2);
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                SettingsPaneManager::as_ref(ctx)
+                    .find_pane(workspace.window_id)
+                    .unwrap()
+                    .pane_group_id
+            );
+        });
+    });
+}
+
+#[test]
+fn settings_widget_navigation_waits_for_the_existing_settings_view_to_be_restored() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_action(
+                    &WorkspaceAction::ScrollToSettingsWidget {
+                        page: SettingsSection::Appearance,
+                        widget_id: "font_size",
+                    },
+                    ctx,
+                );
+            });
+        });
+        opened.await;
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tabs.len(), 2);
+            assert_eq!(
+                workspace.active_tab_pane_group().id(),
+                SettingsPaneManager::as_ref(ctx)
+                    .find_pane(workspace.window_id)
+                    .unwrap()
+                    .pane_group_id
+            );
+        });
+    });
+}
+
 #[test]
 fn test_team_navigation_mode() {
     assert_eq!(

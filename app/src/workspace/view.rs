@@ -8823,9 +8823,54 @@ impl Workspace {
         search_query: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.open_settings_pane_with_widget(page, search_query, None, true, ctx);
+    }
+
+    fn open_settings_pane_with_widget(
+        &mut self,
+        page: Option<SettingsSection>,
+        search_query: Option<&str>,
+        widget_id: Option<&'static str>,
+        retry: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Ensure there is only one settings pane per window
         let settings_pane_manager = SettingsPaneManager::handle(ctx);
-        if let Some(locator) = settings_pane_manager.as_ref(ctx).find_pane(ctx.window_id()) {
+        let window_id = ctx.window_id();
+        let locator = settings_pane_manager.as_ref(ctx).find_pane(window_id);
+        let mut settings_view = settings_pane_manager.as_ref(ctx).settings_view(window_id);
+        if settings_view.try_as_ref(ctx).is_none() {
+            if retry {
+                // Pane construction and focus also borrow the settings view. Retry the entire
+                // request after the current view updates finish, not just the page change.
+                let search_query = search_query.map(str::to_owned);
+                ctx.spawn(async {}, move |workspace, _, ctx| {
+                    workspace.open_settings_pane_with_widget(
+                        page,
+                        search_query.as_deref(),
+                        widget_id,
+                        false,
+                        ctx,
+                    );
+                });
+                return;
+            }
+            if locator.is_some() {
+                return;
+            }
+            // With no pane to preserve, replace a view that is still missing after the retry.
+            ctx.unsubscribe_to_view(&self.settings_pane);
+            settings_view = ctx.add_typed_action_view(|ctx| SettingsView::new(None, ctx));
+            ctx.subscribe_to_view(&settings_view, |workspace, _, event, ctx| {
+                workspace.handle_settings_pane_event(event, ctx);
+            });
+            settings_pane_manager.update(ctx, |manager, _| {
+                manager.register_view(window_id, settings_view.clone());
+            });
+        }
+
+        if let Some(locator) = locator {
+            self.settings_pane = settings_view;
             // Update the page and/or search query if specified. The search query
             // must be applied even when no page is given (e.g. `warp://settings?q=`)
             // so an already-open settings tab reflects the new query.
@@ -8841,19 +8886,26 @@ impl Workspace {
             }
             // Navigate to and focus existing pane
             self.focus_pane(locator, ctx);
+            if let Some(widget_id) = widget_id {
+                self.settings_pane.update(ctx, |settings, ctx| {
+                    settings.scroll_to_settings_widget(page.unwrap_or_default(), widget_id, ctx);
+                });
+            }
             return;
         }
 
         let ps1_grid_info = self.active_session_ps1_grid_info(ctx);
         // Open new tab and update current page
-        self.settings_pane.update(ctx, move |settings_pane, ctx| {
-            // TODO: This check shouldn't be necessary, but `active_session_ps1_grid_info` returns
-            // None when the active tab has no running terminal sessions, e.g. if it contains only
-            // notebooks/workflow panes.
-            if ps1_grid_info.is_some() {
-                settings_pane.set_ps1_info(ps1_grid_info, ctx);
-            }
-        });
+        let _ = self
+            .settings_pane
+            .try_update(ctx, move |settings_pane, ctx| {
+                // TODO: This check shouldn't be necessary, but `active_session_ps1_grid_info` returns
+                // None when the active tab has no running terminal sessions, e.g. if it contains only
+                // notebooks/workflow panes.
+                if ps1_grid_info.is_some() {
+                    settings_pane.set_ps1_info(ps1_grid_info, ctx);
+                }
+            });
 
         let panes_layout = PanesLayout::Snapshot(Box::new(PaneNodeSnapshot::Leaf(LeafSnapshot {
             is_focused: true,
@@ -8863,12 +8915,18 @@ impl Workspace {
                 search_query: search_query.map(|s| s.to_owned()),
             }),
         })));
+        self.settings_pane = settings_view;
         self.add_tab_with_pane_layout(
             panes_layout,
             Arc::new(HashMap::new()),
             Some("Settings".to_owned()),
             ctx,
         );
+        if let Some(widget_id) = widget_id {
+            self.settings_pane.update(ctx, |settings, ctx| {
+                settings.scroll_to_settings_widget(page.unwrap_or_default(), widget_id, ctx);
+            });
+        }
     }
 
     /// Open a file from the given session as a notebook pane.
@@ -25740,10 +25798,7 @@ impl TypedActionView for Workspace {
                 }
             }
             ScrollToSettingsWidget { page, widget_id } => {
-                self.open_settings_pane(Some(*page), None, ctx);
-                self.settings_pane.update(ctx, |settings, ctx| {
-                    settings.scroll_to_settings_widget(*page, widget_id, ctx);
-                });
+                self.open_settings_pane_with_widget(Some(*page), None, Some(widget_id), true, ctx);
                 ctx.notify();
             }
             OpenFileInNewTab {
