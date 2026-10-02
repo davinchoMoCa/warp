@@ -247,7 +247,7 @@ pub fn extract_claude<'a>(
             let fields = usage.values.map(|value| value.is_some());
             missing_category |= observed_fields.is_some_and(|previous| previous != fields);
             observed_fields = Some(fields);
-            accounting.total.add(&usage, &mut findings);
+            accounting.diagnostic_total.add(&usage, &mut findings);
             accounting.request(&usage, &response.attribution, &mut findings);
         } else if !response.conflicted {
             findings.token(ReasonCode::IncompleteInput);

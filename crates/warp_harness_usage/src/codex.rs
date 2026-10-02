@@ -67,7 +67,7 @@ struct Segment {
 impl Segment {
     fn finish(mut self, accounting: &mut Accounting<6>, findings: &mut Findings) {
         if let Some(total) = self.latest {
-            self.accounting.total = total;
+            self.accounting.diagnostic_total = total;
             accounting.merge(self.accounting, findings);
         }
     }

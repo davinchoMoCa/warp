@@ -93,7 +93,7 @@ fn response(id: &str, usage: Value, content: Value) -> Value {
 }
 
 #[test]
-fn evolving_responses_do_not_deduplicate_distinct_tool_blocks() {
+fn evolving_and_model_less_responses_preserve_usage_and_distinct_tool_blocks() {
     let entries = parse_jsonl(
         include_bytes!("fixtures/claude.jsonl").as_slice(),
         JSONL_LIMITS,

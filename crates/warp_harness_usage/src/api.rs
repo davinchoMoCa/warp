@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::Findings;
 use crate::counters::Counters;
 
-/// Maximum encoded publication body size.
+/// Maximum encoded metrics body size, independent of raw transcript uploads.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// One cumulative harness usage capture.
@@ -90,6 +90,8 @@ impl HarnessUsageRequest {
     }
 
     /// Fold oversized request detail into unpriced usage before freezing publication.
+    ///
+    /// Retained rows preserve request boundaries for threshold-aware pricing; grouped usage cannot.
     pub fn bound_to_body(&mut self) -> Result<bool, serde_json::Error> {
         let body_size = serde_json::to_vec(&self)?.len();
         if body_size <= MAX_BODY_BYTES {
@@ -159,6 +161,8 @@ pub enum CoverageStatus {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct UsagePayload<T> {
     pub requests: Vec<RequestUsage<T>>,
+    /// Unpriced usage excluded from requests: cumulative history, unconfirmed deltas, newly observed
+    /// counter baselines, or request detail omitted by row/body limits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unattributed_usage: Option<T>,
     #[serde(rename = "toolCalls", skip_serializing_if = "Option::is_none")]
@@ -194,6 +198,7 @@ pub struct RequestUsage<T> {
 /// Classifications attached to an observed request.
 #[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Attribution {
+    /// Unknown models stay absent rather than being inferred from neighboring requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

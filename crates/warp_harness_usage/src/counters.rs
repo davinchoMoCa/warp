@@ -141,7 +141,8 @@ impl<const N: usize> Counters<N> {
 }
 
 pub(crate) struct Accounting<const N: usize> {
-    pub(crate) total: Counters<N>,
+    /// Aggregate used only to diagnose counter drift and overflow, never emitted in the payload.
+    pub(crate) diagnostic_total: Counters<N>,
     requests: Vec<(Attribution, Counters<N>)>,
     unattributed: Counters<N>,
 }
@@ -149,7 +150,7 @@ pub(crate) struct Accounting<const N: usize> {
 impl<const N: usize> Default for Accounting<N> {
     fn default() -> Self {
         Self {
-            total: Counters::default(),
+            diagnostic_total: Counters::default(),
             requests: Vec::new(),
             unattributed: Counters::default(),
         }
@@ -166,10 +167,13 @@ impl<const N: usize> Accounting<N> {
     }
 
     pub(crate) fn merge(&mut self, other: Self, findings: &mut Findings) {
-        if self.total.any() && other.total.any() && !self.total.same_fields(&other.total) {
+        if self.diagnostic_total.any()
+            && other.diagnostic_total.any()
+            && !self.diagnostic_total.same_fields(&other.diagnostic_total)
+        {
             findings.token(ReasonCode::IncompleteInput);
         }
-        self.total.add(&other.total, findings);
+        self.diagnostic_total.add(&other.diagnostic_total, findings);
         self.unattributed.add(&other.unattributed, findings);
         for (attribution, usage) in other.requests {
             self.request(&usage, &attribution, findings);
