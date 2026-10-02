@@ -304,7 +304,7 @@ use crate::pane_group::{
     self, AIFactPane, AnyPaneContent, ChildAgentOrigin, CodeDiffPane, CodePane, CodeReviewPanelArg,
     CustomRouterEditorPane, Direction as PaneGroupDirection, Direction, EnvironmentManagementPane,
     ExecutionProfileEditorPane, NetworkLogPane, NewTerminalOptions, PaneGroup, PaneId, PanesLayout,
-    TabBarHoverIndex, TerminalPaneId,
+    SettingsPane, TabBarHoverIndex, TerminalPaneId,
 };
 use crate::persistence::ModelEvent;
 use crate::projects::ProjectManagementModel;
@@ -1042,6 +1042,14 @@ enum TabBarSlot {
     },
 }
 
+type SettingsPaneOnOpen = Box<dyn FnOnce(&mut SettingsView, &mut ViewContext<SettingsView>)>;
+
+struct SettingsPaneRequest {
+    page: Option<SettingsSection>,
+    search_query: Option<String>,
+    on_open: SettingsPaneOnOpen,
+}
+
 pub struct Workspace {
     window_id: WindowId,
     pub(crate) tabs: Vec<TabData>,
@@ -1090,6 +1098,7 @@ pub struct Workspace {
     ctrl_tab_palette: ViewHandle<CommandPalette>,
     mouse_states: WorkspaceMouseStates,
     settings_pane: ViewHandle<SettingsView>,
+    settings_navigation_generation: u64,
     import_modal: ViewHandle<ImportModal>,
     theme_chooser_view: ViewHandle<ThemeChooser>,
     previous_theme: Option<ThemeKind>,
@@ -3483,6 +3492,7 @@ impl Workspace {
             previous_theme: None,
             background_image_animation_start_time: Instant::now(),
             settings_pane,
+            settings_navigation_generation: 0,
             theme_chooser_view,
             reward_modal,
             reward_modal_pending: None,
@@ -8823,54 +8833,113 @@ impl Workspace {
         search_query: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.open_settings_pane_with_widget(page, search_query, None, true, ctx);
+        self.open_settings_pane_with_callback(page, search_query, ctx, |_, _| {});
     }
 
-    fn open_settings_pane_with_widget(
+    fn open_settings_pane_with_callback(
         &mut self,
         page: Option<SettingsSection>,
         search_query: Option<&str>,
-        widget_id: Option<&'static str>,
+        ctx: &mut ViewContext<Self>,
+        on_open: impl FnOnce(&mut SettingsView, &mut ViewContext<SettingsView>) + 'static,
+    ) {
+        self.settings_navigation_generation = self.settings_navigation_generation.wrapping_add(1);
+        self.apply_settings_pane_request(
+            SettingsPaneRequest {
+                page,
+                search_query: search_query.map(str::to_owned),
+                on_open: Box::new(on_open),
+            },
+            self.settings_navigation_generation,
+            true,
+            ctx,
+        );
+    }
+
+    fn apply_settings_pane_request(
+        &mut self,
+        request: SettingsPaneRequest,
+        generation: u64,
         retry: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        if generation != self.settings_navigation_generation {
+            return;
+        }
         // Ensure there is only one settings pane per window
         let settings_pane_manager = SettingsPaneManager::handle(ctx);
         let window_id = ctx.window_id();
-        let locator = settings_pane_manager.as_ref(ctx).find_pane(window_id);
+        let mut locator = settings_pane_manager.as_ref(ctx).find_pane(window_id);
         let mut settings_view = settings_pane_manager.as_ref(ctx).settings_view(window_id);
         if settings_view.try_as_ref(ctx).is_none() {
             if retry {
                 // Pane construction and focus also borrow the settings view. Retry the entire
                 // request after the current view updates finish, not just the page change.
-                let search_query = search_query.map(str::to_owned);
                 ctx.spawn(async {}, move |workspace, _, ctx| {
-                    workspace.open_settings_pane_with_widget(
-                        page,
-                        search_query.as_deref(),
-                        widget_id,
-                        false,
-                        ctx,
-                    );
+                    workspace.apply_settings_pane_request(request, generation, false, ctx);
                 });
                 return;
             }
-            if locator.is_some() {
-                return;
-            }
-            // With no pane to preserve, replace a view that is still missing after the retry.
+            let backing_view = locator.and_then(|locator| {
+                self.get_pane_group_view_with_id(locator.pane_group_id)
+                    .and_then(|group| {
+                        group
+                            .as_ref(ctx)
+                            .downcast_pane_by_id::<SettingsPane>(locator.pane_id)
+                    })
+                    .map(|pane| pane.settings_view(ctx))
+                    .filter(|view| view.try_as_ref(ctx).is_some())
+            });
+            settings_view = backing_view
+                .unwrap_or_else(|| ctx.add_typed_action_view(|ctx| SettingsView::new(None, ctx)));
             ctx.unsubscribe_to_view(&self.settings_pane);
-            settings_view = ctx.add_typed_action_view(|ctx| SettingsView::new(None, ctx));
             ctx.subscribe_to_view(&settings_view, |workspace, _, event, ctx| {
                 workspace.handle_settings_pane_event(event, ctx);
             });
             settings_pane_manager.update(ctx, |manager, _| {
                 manager.register_view(window_id, settings_view.clone());
             });
+            if let Some(existing) = locator {
+                let group = self
+                    .get_pane_group_view_with_id(existing.pane_group_id)
+                    .cloned();
+                if let Some(group) = group {
+                    let backing_is_live = group
+                        .as_ref(ctx)
+                        .downcast_pane_by_id::<SettingsPane>(existing.pane_id)
+                        .is_some_and(|pane| pane.settings_view(ctx).id() == settings_view.id());
+                    if !backing_is_live {
+                        group.update(ctx, |group, ctx| {
+                            let pane = SettingsPane::new(
+                                request.page.unwrap_or_default(),
+                                request.search_query.as_deref(),
+                                window_id,
+                                ctx,
+                            );
+                            group.replace_pane(existing.pane_id, pane, false, ctx);
+                        });
+                    }
+                } else {
+                    settings_pane_manager.update(ctx, |manager, ctx| {
+                        manager.deregister_pane(
+                            &window_id,
+                            existing.pane_group_id,
+                            existing.pane_id,
+                            ctx,
+                        );
+                    });
+                }
+                locator = settings_pane_manager.as_ref(ctx).find_pane(window_id);
+            }
         }
 
+        let SettingsPaneRequest {
+            page,
+            search_query,
+            on_open,
+        } = request;
+        self.settings_pane = settings_view;
         if let Some(locator) = locator {
-            self.settings_pane = settings_view;
             // Update the page and/or search query if specified. The search query
             // must be applied even when no page is given (e.g. `warp://settings?q=`)
             // so an already-open settings tab reflects the new query.
@@ -8879,18 +8948,14 @@ impl Workspace {
                     if let Some(page) = page {
                         settings_pane.set_and_refresh_current_page(page, ctx);
                     }
-                    if let Some(search_query) = search_query {
+                    if let Some(search_query) = search_query.as_deref() {
                         settings_pane.set_search_query(search_query, ctx);
                     }
                 });
             }
             // Navigate to and focus existing pane
             self.focus_pane(locator, ctx);
-            if let Some(widget_id) = widget_id {
-                self.settings_pane.update(ctx, |settings, ctx| {
-                    settings.scroll_to_settings_widget(page.unwrap_or_default(), widget_id, ctx);
-                });
-            }
+            self.settings_pane.update(ctx, on_open);
             return;
         }
 
@@ -8912,21 +8977,16 @@ impl Workspace {
             custom_vertical_tabs_title: None,
             contents: LeafContents::Settings(SettingsPaneSnapshot::Local {
                 current_page: page.unwrap_or_default(),
-                search_query: search_query.map(|s| s.to_owned()),
+                search_query,
             }),
         })));
-        self.settings_pane = settings_view;
         self.add_tab_with_pane_layout(
             panes_layout,
             Arc::new(HashMap::new()),
             Some("Settings".to_owned()),
             ctx,
         );
-        if let Some(widget_id) = widget_id {
-            self.settings_pane.update(ctx, |settings, ctx| {
-                settings.scroll_to_settings_widget(page.unwrap_or_default(), widget_id, ctx);
-            });
-        }
+        self.settings_pane.update(ctx, on_open);
     }
 
     /// Open a file from the given session as a notebook pane.
@@ -18958,12 +19018,17 @@ impl Workspace {
         let show_join_modal = UserWorkspaces::as_ref(ctx)
             .team_for_window(self.window_id)
             .is_some();
-        self.show_settings_with_section(Some(SettingsSection::Teams), ctx);
-        if show_join_modal {
-            self.settings_pane.update(ctx, |view, ctx| {
-                view.open_teams_page_join_modal(ctx);
-            });
-        }
+        self.close_all_overlays(ctx);
+        self.open_settings_pane_with_callback(
+            Some(SettingsSection::Teams),
+            None,
+            ctx,
+            move |view, ctx| {
+                if show_join_modal {
+                    view.open_teams_page_join_modal(ctx);
+                }
+            },
+        );
     }
 
     /// Opens the team settings page and fills the invite field with the given email. This is used when linking directing to
@@ -18973,11 +19038,16 @@ impl Workspace {
         email_invite: Option<&String>,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.show_settings_with_section(Some(SettingsSection::Teams), ctx);
-
-        self.settings_pane.update(ctx, |view, ctx| {
-            view.open_teams_page_email_invite(email_invite, ctx);
-        });
+        self.close_all_overlays(ctx);
+        let email_invite = email_invite.cloned();
+        self.open_settings_pane_with_callback(
+            Some(SettingsSection::Teams),
+            None,
+            ctx,
+            move |view, ctx| {
+                view.open_teams_page_email_invite(email_invite.as_ref(), ctx);
+            },
+        );
     }
 
     /// Opens the MCP servers settings page, optionally triggering auto-install of a gallery MCP.
@@ -18987,11 +19057,16 @@ impl Workspace {
         autoinstall_gallery_title: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.show_settings_with_section(Some(SettingsSection::AgentMCPServers), ctx);
-
-        self.settings_pane.update(ctx, |view, ctx| {
-            view.open_mcp_servers_page(page, autoinstall_gallery_title, ctx);
-        });
+        self.close_all_overlays(ctx);
+        let autoinstall_gallery_title = autoinstall_gallery_title.map(str::to_owned);
+        self.open_settings_pane_with_callback(
+            Some(SettingsSection::AgentMCPServers),
+            None,
+            ctx,
+            move |view, ctx| {
+                view.open_mcp_servers_page(page, autoinstall_gallery_title.as_deref(), ctx);
+            },
+        );
     }
 
     /// Shows the theme chooser so the user can change the active theme.
@@ -19043,12 +19118,18 @@ impl Workspace {
         keybinding_name: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.show_settings_with_section(Some(SettingsSection::Keybindings), ctx);
-        if let Some(keybinding_name) = keybinding_name {
-            self.settings_pane.update(ctx, |settings_pane, ctx| {
-                settings_pane.search_for_keybinding(keybinding_name, ctx);
-            });
-        }
+        self.close_all_overlays(ctx);
+        let keybinding_name = keybinding_name.map(str::to_owned);
+        self.open_settings_pane_with_callback(
+            Some(SettingsSection::Keybindings),
+            None,
+            ctx,
+            move |settings, ctx| {
+                if let Some(keybinding_name) = keybinding_name {
+                    settings.search_for_keybinding(&keybinding_name, ctx);
+                }
+            },
+        );
     }
 
     pub fn is_theme_chooser_open(&self) -> bool {
@@ -19401,17 +19482,22 @@ impl Workspace {
             model.mark_feature_intro_dismissed(ctx);
         });
         self.feature_intro_tab_pane_group_id = None;
-        self.focus_active_tab(ctx);
 
         if let Some(cta_target) = cta_target {
             match cta_target {
                 FeatureIntroCtaTarget::SettingsWidget { page, widget_id } => {
-                    self.open_settings_pane(Some(page), None, ctx);
-                    self.settings_pane.update(ctx, |settings, ctx| {
-                        settings.scroll_to_settings_widget(page, widget_id(), ctx);
-                    });
+                    self.open_settings_pane_with_callback(
+                        Some(page),
+                        None,
+                        ctx,
+                        move |settings, ctx| {
+                            settings.scroll_to_settings_widget(page, widget_id(), ctx);
+                        },
+                    );
                 }
             }
+        } else {
+            self.focus_active_tab(ctx);
         }
         ctx.notify();
     }
@@ -25798,7 +25884,15 @@ impl TypedActionView for Workspace {
                 }
             }
             ScrollToSettingsWidget { page, widget_id } => {
-                self.open_settings_pane_with_widget(Some(*page), None, Some(widget_id), true, ctx);
+                let (page, widget_id) = (*page, *widget_id);
+                self.open_settings_pane_with_callback(
+                    Some(page),
+                    None,
+                    ctx,
+                    move |settings, ctx| {
+                        settings.scroll_to_settings_widget(page, widget_id, ctx);
+                    },
+                );
                 ctx.notify();
             }
             OpenFileInNewTab {

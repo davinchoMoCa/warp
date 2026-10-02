@@ -51,7 +51,7 @@ use crate::gpu_state::GPUState;
 use crate::network::NetworkStatus;
 use crate::notebooks::editor::keys::NotebookKeybindings;
 use crate::notebooks::notebook::NotebookView;
-use crate::pane_group::{Direction, PaneGroupAction, PaneId};
+use crate::pane_group::{Direction, PaneGroupAction, PaneId, SettingsPane};
 use crate::pricing::PricingInfoModel;
 #[cfg(not(target_family = "wasm"))]
 use crate::remote_server::codebase_index_model::RemoteCodebaseIndexModel;
@@ -284,6 +284,66 @@ pub(crate) fn mock_workspace(app: &mut App) -> ViewHandle<Workspace> {
     workspace
 }
 
+const CURSOR_TYPE_WIDGET_ID: &str = "warp::settings_view::appearance_page::CursorTypeWidget";
+
+fn assert_settings_widget_visible_and_highlighted(
+    app: &mut App,
+    workspace: &ViewHandle<Workspace>,
+    widget_id: &'static str,
+) {
+    let window_id = workspace.read(app, |workspace, _| workspace.window_id);
+    let mut presenter = warpui::Presenter::new(window_id);
+    app.update(|ctx| {
+        presenter.invalidate(
+            warpui::WindowInvalidation {
+                updated: ctx.view_ids_for_window(window_id).into_iter().collect(),
+                ..Default::default()
+            },
+            ctx,
+        );
+        for _ in 0..3 {
+            presenter.build_scene(vec2f(1000., 600.), 1., None, ctx);
+        }
+        let bounds = presenter.position_cache().get_position(widget_id).unwrap();
+        let scene = presenter.scene().unwrap();
+        let highlight = scene
+            .layers()
+            .find_map(|layer| {
+                layer
+                    .rects
+                    .iter()
+                    .find(|rect| {
+                        rect.bounds == bounds
+                            && rect.border
+                                == warpui::elements::Border::all(1.)
+                                    .with_border_fill(Appearance::as_ref(ctx).theme().accent())
+                    })
+                    .map(|rect| (rect.bounds, layer.clip_bounds))
+            })
+            .expect("target widget should have an accent highlight");
+        let clip = highlight
+            .1
+            .expect("widget should be inside the scroll viewport");
+        assert!(bounds.min_y() >= clip.min_y(), "{bounds:?} above {clip:?}");
+        assert!(bounds.max_y() <= clip.max_y(), "{bounds:?} below {clip:?}");
+    });
+}
+
+fn assert_keybindings_filtered(app: &App, workspace: &ViewHandle<Workspace>) {
+    workspace.read(app, |workspace, ctx| {
+        let views = ctx
+            .views_of_type::<crate::settings_view::keybindings::KeybindingsView>(
+                workspace.window_id,
+            )
+            .unwrap();
+        let rows = views[0].as_ref(ctx).rows.as_ref().unwrap();
+        assert!(
+            rows.is_empty(),
+            "the requested keybinding query should hide unrelated rows"
+        );
+    });
+}
+
 fn settings_page_opened(
     app: &App,
     workspace: &ViewHandle<Workspace>,
@@ -367,13 +427,14 @@ fn settings_widget_first_open_waits_for_the_settings_view_to_be_restored() {
                 workspace.handle_action(
                     &WorkspaceAction::ScrollToSettingsWidget {
                         page: SettingsSection::Appearance,
-                        widget_id: "font_size",
+                        widget_id: CURSOR_TYPE_WIDGET_ID,
                     },
                     ctx,
                 );
             });
         });
         opened.await;
+        assert_settings_widget_visible_and_highlighted(&mut app, &workspace, CURSOR_TYPE_WIDGET_ID);
 
         workspace.read(&app, |workspace, ctx| {
             assert_eq!(workspace.tabs.len(), 2);
@@ -405,15 +466,18 @@ fn settings_first_open_recreates_a_missing_settings_view() {
             });
         });
         app.update(|ctx| ctx.simulate_window_closed(other_window_id));
-        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Keybindings);
 
         workspace.update(&mut app, |workspace, ctx| {
             workspace.handle_action(
-                &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+                &WorkspaceAction::ConfigureKeybindingSettings {
+                    keybinding_name: Some("this_keybinding_does_not_exist_anywhere".to_owned()),
+                },
                 ctx,
             );
         });
         opened.await;
+        assert_keybindings_filtered(&app, &workspace);
 
         workspace.read(&app, |workspace, ctx| {
             assert_eq!(workspace.tabs.len(), 2);
@@ -441,7 +505,10 @@ fn settings_page_switch_waits_for_the_existing_settings_view_to_be_restored() {
         settings.update(&mut app, |_, ctx| {
             workspace.update(ctx, |workspace, ctx| {
                 workspace.handle_action(
-                    &WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+                    &WorkspaceAction::ShowSettingsPageWithSearch {
+                        section: Some(SettingsSection::Appearance),
+                        search_query: "cursor".to_owned(),
+                    },
                     ctx,
                 );
             });
@@ -449,6 +516,12 @@ fn settings_page_switch_waits_for_the_existing_settings_view_to_be_restored() {
         opened.await;
 
         workspace.read(&app, |workspace, ctx| {
+            assert!(
+                ctx.views_of_type::<EditorView>(workspace.window_id)
+                    .unwrap()
+                    .iter()
+                    .any(|editor| editor.as_ref(ctx).buffer_text(ctx) == "cursor")
+            );
             assert_eq!(workspace.tabs.len(), 2);
             assert_eq!(
                 workspace.active_tab_pane_group().id(),
@@ -475,13 +548,14 @@ fn settings_widget_navigation_waits_for_the_existing_settings_view_to_be_restore
                 workspace.handle_action(
                     &WorkspaceAction::ScrollToSettingsWidget {
                         page: SettingsSection::Appearance,
-                        widget_id: "font_size",
+                        widget_id: CURSOR_TYPE_WIDGET_ID,
                     },
                     ctx,
                 );
             });
         });
         opened.await;
+        assert_settings_widget_visible_and_highlighted(&mut app, &workspace, CURSOR_TYPE_WIDGET_ID);
 
         workspace.read(&app, |workspace, ctx| {
             assert_eq!(workspace.tabs.len(), 2);
@@ -493,6 +567,217 @@ fn settings_widget_navigation_waits_for_the_existing_settings_view_to_be_restore
                     .pane_group_id
             );
         });
+    });
+}
+
+#[test]
+fn settings_keybinding_navigation_preserves_the_checked_out_continuation() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Keybindings);
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_action(
+                    &WorkspaceAction::ConfigureKeybindingSettings {
+                        keybinding_name: Some("this_keybinding_does_not_exist_anywhere".to_owned()),
+                    },
+                    ctx,
+                );
+            });
+        });
+        opened.await;
+        assert_keybindings_filtered(&app, &workspace);
+    });
+}
+
+#[test]
+fn settings_newer_navigation_supersedes_a_queued_request() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let (sender, retried) = futures::channel::oneshot::channel();
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.show_settings_with_section(Some(SettingsSection::Appearance), ctx);
+            });
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.show_settings_with_section(Some(SettingsSection::BillingAndUsage), ctx);
+            ctx.spawn(async {}, move |_, _, _| {
+                sender.send(()).unwrap();
+            });
+        });
+        retried.await.unwrap();
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(
+                workspace
+                    .settings_pane
+                    .as_ref(ctx)
+                    .current_settings_section(),
+                SettingsSection::BillingAndUsage
+            );
+            assert_eq!(workspace.tabs.len(), 2);
+        });
+    });
+}
+
+#[test]
+fn settings_existing_pane_recovers_its_live_backing_view() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let original = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let other = mock_workspace(&mut app);
+        let (other_window, missing) = other.read(&app, |workspace, _| {
+            (workspace.window_id, workspace.settings_pane.clone())
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.settings_pane = missing.clone();
+            let window_id = ctx.window_id();
+            SettingsPaneManager::handle(ctx)
+                .update(ctx, |manager, _| manager.register_view(window_id, missing));
+        });
+        app.update(|ctx| ctx.simulate_window_closed(other_window));
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::ScrollToSettingsWidget {
+                    page: SettingsSection::Appearance,
+                    widget_id: CURSOR_TYPE_WIDGET_ID,
+                },
+                ctx,
+            )
+        });
+        opened.await;
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.settings_pane.id(), original.id());
+            assert_eq!(workspace.tabs.len(), 2);
+            assert_eq!(
+                SettingsPaneManager::as_ref(ctx)
+                    .settings_view(workspace.window_id)
+                    .id(),
+                original.id()
+            );
+        });
+        assert_settings_widget_visible_and_highlighted(&mut app, &workspace, CURSOR_TYPE_WIDGET_ID);
+    });
+}
+
+#[test]
+fn settings_existing_pane_replaces_a_missing_backing_view_in_place() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let (window_id, missing, locator) = workspace.read(&app, |workspace, ctx| {
+            (
+                workspace.window_id,
+                workspace.settings_pane.clone(),
+                SettingsPaneManager::as_ref(ctx)
+                    .find_pane(workspace.window_id)
+                    .unwrap(),
+            )
+        });
+        workspace.update(&mut app, |workspace, ctx| workspace.activate_tab(0, ctx));
+        let other = mock_workspace(&mut app);
+        let other_window = other.read(&app, |workspace, _| workspace.window_id);
+        app.update(|ctx| {
+            assert!(ctx.transfer_view_to_window(missing.id(), window_id, other_window));
+            ctx.simulate_window_closed(other_window);
+        });
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::Appearance);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::ShowSettingsPageWithSearch {
+                    section: Some(SettingsSection::Appearance),
+                    search_query: "cursor".to_owned(),
+                },
+                ctx,
+            )
+        });
+        opened.await;
+        workspace.read(&app, |workspace, ctx| {
+            assert!(
+                ctx.views_of_type::<EditorView>(workspace.window_id)
+                    .unwrap()
+                    .iter()
+                    .any(|editor| editor.as_ref(ctx).buffer_text(ctx) == "cursor")
+            );
+            assert_eq!(workspace.tabs.len(), 2);
+            assert_ne!(workspace.settings_pane.id(), missing.id());
+            let repaired = SettingsPaneManager::as_ref(ctx)
+                .find_pane(window_id)
+                .unwrap();
+            assert_eq!(repaired.pane_group_id, locator.pane_group_id);
+            let group = workspace.active_tab_pane_group().as_ref(ctx);
+            assert_eq!(group.pane_count(), 1);
+            assert_eq!(
+                group
+                    .downcast_pane_by_id::<SettingsPane>(repaired.pane_id)
+                    .unwrap()
+                    .settings_view(ctx)
+                    .id(),
+                workspace.settings_pane.id()
+            );
+        });
+    });
+}
+#[test]
+fn settings_mcp_navigation_preserves_the_checked_out_edit_page_request() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::AgentMCPServers);
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.open_mcp_servers_page(
+                    MCPServersSettingsPage::Edit { item_id: None },
+                    None,
+                    ctx,
+                );
+            });
+        });
+        opened.await;
+        workspace.read(&app, |workspace, ctx| {
+            let page = ctx.views_of_type::<crate::settings_view::mcp_servers_page::MCPServersSettingsPageView>(workspace.window_id).unwrap();
+            let rendered_children = page[0].as_ref(ctx).render(ctx).debug_child_view_ids();
+            assert_eq!(rendered_children.len(), 1);
+            assert_eq!(ctx.view_name(workspace.window_id, rendered_children[0]), Some("MCPServersEditPageView"));
+        });
+    });
+}
+
+#[test]
+fn settings_feature_intro_preserves_the_checked_out_widget_request() {
+    let _custom_routers = FeatureFlag::CustomModelRouters.override_enabled(true);
+    let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| workspace.show_settings(ctx));
+        let settings = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+        let opened = settings_page_opened(&app, &workspace, SettingsSection::WarpAgent);
+        settings.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.handle_feature_intro_modal_event(
+                    &FeatureIntroModalEvent::GetStarted(FeatureIntroId::CustomModelRouter),
+                    ctx,
+                );
+            });
+        });
+        opened.await;
+        assert_settings_widget_visible_and_highlighted(
+            &mut app,
+            &workspace,
+            crate::settings_view::custom_model_routers_widget_id(),
+        );
     });
 }
 
