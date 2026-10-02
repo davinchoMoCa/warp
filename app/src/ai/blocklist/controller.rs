@@ -360,7 +360,7 @@ pub struct BlocklistAIController {
     pending_local_claude_wakes: HashMap<AIConversationId, SpawnedFutureHandle>,
     /// Passive conversations explicitly requested to follow up after actions complete.
     pending_passive_follow_ups: HashSet<AIConversationId>,
-    steering_interrupted_commands: HashMap<AIConversationId, BlockId>,
+    commands_interrupted_for_injection: HashMap<AIConversationId, BlockId>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -521,12 +521,12 @@ impl BlocklistAIController {
             // triggers a follow-up nor counts as a cancellation.
             let treat_as_success =
                 matches!(cancellation_outcome, Some(CancellationOutcome::Succeeded));
-            let steering_interrupt_completed = cancellation_reason.is_none()
-                && me.has_ready_primary_steering_prompt(*conversation_id, ctx)
+            let injection_interrupt_completed = cancellation_reason.is_none()
+                && me.has_ready_primary_injected_followup(*conversation_id, ctx)
                 && finished_action_results.iter().any(|result| {
-                    me.is_steering_interrupt_completion(*conversation_id, &result.result)
+                    me.is_injection_interrupt_completion(*conversation_id, &result.result)
                 });
-            let should_trigger_follow_up_request = steering_interrupt_completed
+            let should_trigger_follow_up_request = injection_interrupt_completed
                 || (!is_passive_code_diff
                     && !treat_as_success
                     && finished_action_results
@@ -659,7 +659,7 @@ impl BlocklistAIController {
                 | QueuedQueryEvent::EditCancelled {
                     conversation_id, ..
                 } => {
-                    me.maybe_interrupt_command_for_steering(*conversation_id, ctx);
+                    me.maybe_interrupt_command_for_injection(*conversation_id, ctx);
                 }
                 QueuedQueryEvent::EditEntered { .. }
                 | QueuedQueryEvent::Cleared { .. }
@@ -716,7 +716,7 @@ impl BlocklistAIController {
             pending_auto_resume_handles: HashMap::new(),
             pending_local_claude_wakes: HashMap::new(),
             pending_passive_follow_ups: HashSet::new(),
-            steering_interrupted_commands: HashMap::new(),
+            commands_interrupted_for_injection: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
         }
     }
@@ -1727,16 +1727,15 @@ impl BlocklistAIController {
             .push((suggestion, trigger));
     }
 
-    fn has_ready_primary_steering_prompt(
+    fn has_ready_primary_injected_followup(
         &self,
         conversation_id: AIConversationId,
         ctx: &AppContext,
     ) -> bool {
         let queue = QueuedQueryModel::as_ref(ctx);
-        queue.is_steering(conversation_id)
-            && !queue.is_dispatch_blocked(conversation_id)
+        !queue.is_dispatch_blocked(conversation_id)
             && queue.ready_head(conversation_id).is_some_and(|row| {
-                !row.is_command()
+                row.shared_session_prompt().is_some()
                     && !row.base_user_query().is_some_and(|base| {
                         base.is_agent_message_wake()
                             || base.intended_agent() == Some(AgentType::Cli)
@@ -1744,12 +1743,12 @@ impl BlocklistAIController {
             })
     }
 
-    fn maybe_interrupt_command_for_steering(
+    fn maybe_interrupt_command_for_injection(
         &mut self,
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        if !self.has_ready_primary_steering_prompt(conversation_id, ctx)
+        if !self.has_ready_primary_injected_followup(conversation_id, ctx)
             || OrchestrationEventService::as_ref(ctx).is_conversation_exiting(conversation_id)
             || !BlocklistAIHistoryModel::as_ref(ctx)
                 .conversation(&conversation_id)
@@ -1774,20 +1773,24 @@ impl BlocklistAIController {
             }
             block.id().clone()
         };
-        if self.steering_interrupted_commands.get(&conversation_id) == Some(&block_id) {
+        if self
+            .commands_interrupted_for_injection
+            .get(&conversation_id)
+            == Some(&block_id)
+        {
             return;
         }
-        self.steering_interrupted_commands
+        self.commands_interrupted_for_injection
             .insert(conversation_id, block_id.clone());
         self.action_model
             .as_ref(ctx)
             .shell_command_executor(ctx)
             .update(ctx, |executor, ctx| {
-                executor.interrupt_for_steering(conversation_id, block_id, ctx);
+                executor.interrupt_for_injected_followup(conversation_id, block_id, ctx);
             });
     }
 
-    fn is_steering_interrupt_completion(
+    fn is_injection_interrupt_completion(
         &self,
         conversation_id: AIConversationId,
         result: &AIAgentActionResultType,
@@ -1796,19 +1799,22 @@ impl BlocklistAIController {
             AIAgentActionResultType::RequestCommandOutput(
                 RequestCommandOutputResult::Completed { block_id, exit_code, .. }
             ) if exit_code.is_sigint()
-                && self.steering_interrupted_commands.get(&conversation_id) == Some(block_id)
+                && self.commands_interrupted_for_injection.get(&conversation_id) == Some(block_id)
         )
     }
 
-    /// Takes one ready steering prompt and updates its response attribution.
+    /// Takes one ready injected followup or steering prompt and updates its response attribution.
     fn steer_head_prompt_for_request(
         &mut self,
         conversation_id: AIConversationId,
         task_id: &TaskId,
         ctx: &mut ModelContext<Self>,
     ) -> Option<AIAgentInput> {
-        self.maybe_interrupt_command_for_steering(conversation_id, ctx);
-        if !QueuedQueryModel::as_ref(ctx).is_steering(conversation_id)
+        self.maybe_interrupt_command_for_injection(conversation_id, ctx);
+        let is_primary_injected_followup =
+            self.has_ready_primary_injected_followup(conversation_id, ctx);
+        if (!QueuedQueryModel::as_ref(ctx).is_steering(conversation_id)
+            && !is_primary_injected_followup)
             || QueuedQueryModel::as_ref(ctx).is_dispatch_blocked(conversation_id)
         {
             return None;
@@ -1817,9 +1823,7 @@ impl BlocklistAIController {
         if row.is_command() {
             return None;
         }
-        let is_primary_steering_prompt =
-            self.has_ready_primary_steering_prompt(conversation_id, ctx);
-        if is_primary_steering_prompt {
+        if is_primary_injected_followup {
             let model = self.terminal_model.lock();
             let block = model.block_list().active_block();
             if block.ai_conversation_id() == Some(conversation_id)
@@ -1896,8 +1900,9 @@ impl BlocklistAIController {
         QueuedQueryModel::handle(ctx).update(ctx, |queue, ctx| {
             queue.remove_fired_row(conversation_id, query_id, ctx);
         });
-        if is_primary_steering_prompt {
-            self.steering_interrupted_commands.remove(&conversation_id);
+        if is_primary_injected_followup {
+            self.commands_interrupted_for_injection
+                .remove(&conversation_id);
         }
         log::info!(
             "event=steered_prompt_included conversation_id={conversation_id} query_id={query_id:?}"
@@ -3128,7 +3133,8 @@ impl BlocklistAIController {
         reason: CancellationReason,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.steering_interrupted_commands.remove(&conversation_id);
+        self.commands_interrupted_for_injection
+            .remove(&conversation_id);
         // Restore the user's keyboard focus if a background computer-use session is still active
         // for this conversation. ctrl-c / stop / pane-close all funnel through here, and on
         // cancellation the computer-use subagent never produces a normal SubagentResult, so the

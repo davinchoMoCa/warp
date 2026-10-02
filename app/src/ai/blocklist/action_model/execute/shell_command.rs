@@ -84,13 +84,13 @@ impl ShellCommandExecutor {
         }
     }
 
-    pub(crate) fn interrupt_for_steering(
+    pub(crate) fn interrupt_for_injected_followup(
         &self,
         conversation_id: AIConversationId,
         block_id: BlockId,
         ctx: &mut ModelContext<Self>,
     ) {
-        ctx.emit(ShellCommandExecutorEvent::InterruptForSteering {
+        ctx.emit(ShellCommandExecutorEvent::InterruptForInjectedFollowup {
             conversation_id,
             block_id,
         });
@@ -1030,7 +1030,7 @@ pub enum ShellCommandExecutorEvent {
         mode: AIAgentPtyWriteMode,
     },
     CancelExecution,
-    InterruptForSteering {
+    InterruptForInjectedFollowup {
         conversation_id: AIConversationId,
         block_id: BlockId,
     },

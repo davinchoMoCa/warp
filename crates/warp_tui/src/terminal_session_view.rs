@@ -5173,7 +5173,7 @@ impl TuiTerminalSessionView {
             ShellCommandExecutorEvent::CancelExecution => {
                 ctx.emit(TuiTerminalSessionEvent::InterruptPty);
             }
-            ShellCommandExecutorEvent::InterruptForSteering {
+            ShellCommandExecutorEvent::InterruptForInjectedFollowup {
                 conversation_id,
                 block_id,
             } => {

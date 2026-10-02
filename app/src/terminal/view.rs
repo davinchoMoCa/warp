@@ -8005,7 +8005,7 @@ impl TerminalView {
                 // user's ctrl-c was directed to the AIBlock instead of the command's shell block.
                 self.ctrl_c(ctx);
             }
-            ShellCommandExecutorEvent::InterruptForSteering {
+            ShellCommandExecutorEvent::InterruptForInjectedFollowup {
                 conversation_id,
                 block_id,
             } => {

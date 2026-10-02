@@ -23,7 +23,7 @@ use crate::ai::blocklist::orchestration_events::{
 use crate::terminal::model::block::BlockId;
 use crate::terminal::view::Event as TerminalEvent;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
-fn start_steering_command(
+fn start_injection_command(
     controller: &mut BlocklistAIController,
     ctx: &mut ModelContext<BlocklistAIController>,
 ) -> (AIConversationId, TaskId, BlockId, AIAgentActionId) {
@@ -46,12 +46,12 @@ fn start_steering_command(
 }
 
 #[test]
-fn steering_interrupt_is_checked_again_at_the_next_request_boundary() {
+fn injection_interrupt_is_checked_again_at_the_next_request_boundary() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
-        let (id, task_id, _, action_id) = controller.update(&mut app, start_steering_command);
+        let (id, task_id, _, action_id) = controller.update(&mut app, start_injection_command);
         controller.update(&mut app, |controller, _| {
             controller.terminal_model.lock().finish_block();
         });
@@ -68,7 +68,11 @@ fn steering_interrupt_is_checked_again_at_the_next_request_boundary() {
             );
         });
         controller.update(&mut app, |controller, ctx| {
-            assert!(!controller.steering_interrupted_commands.contains_key(&id));
+            assert!(
+                !controller
+                    .commands_interrupted_for_injection
+                    .contains_key(&id)
+            );
             let block_id = {
                 let mut model = controller.terminal_model.lock();
                 model.simulate_long_running_block("lint", "working");
@@ -82,7 +86,7 @@ fn steering_interrupt_is_checked_again_at_the_next_request_boundary() {
                     .is_none()
             );
             assert_eq!(
-                controller.steering_interrupted_commands.get(&id),
+                controller.commands_interrupted_for_injection.get(&id),
                 Some(&block_id)
             );
         });
@@ -90,36 +94,44 @@ fn steering_interrupt_is_checked_again_at_the_next_request_boundary() {
 }
 
 #[test]
-fn steering_interrupt_waits_for_attachments_and_explicit_stop_clears_override() {
+fn injection_interrupt_waits_for_attachments_and_explicit_stop_clears_override() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
-        let (id, _, block_id, _) = controller.update(&mut app, start_steering_command);
+        let (id, _, block_id, _) = controller.update(&mut app, start_injection_command);
         let row_id = QueuedQueryModel::handle(&app).update(&mut app, |queue, ctx| {
             queue.append(id, file_prompt(ParticipantId::new(), None), ctx)
         });
         controller.read(&app, |controller, _| {
-            assert!(!controller.steering_interrupted_commands.contains_key(&id));
+            assert!(
+                !controller
+                    .commands_interrupted_for_injection
+                    .contains_key(&id)
+            );
         });
         QueuedQueryModel::handle(&app).update(&mut app, |queue, ctx| {
             queue.complete_preparation(id, row_id, prepared_file(), ctx);
         });
         controller.update(&mut app, |controller, ctx| {
             assert_eq!(
-                controller.steering_interrupted_commands.get(&id),
+                controller.commands_interrupted_for_injection.get(&id),
                 Some(&block_id)
             );
             controller.cancel_conversation_progress(id, CancellationReason::ManuallyCancelled, ctx);
-            assert!(!controller.steering_interrupted_commands.contains_key(&id));
+            assert!(
+                !controller
+                    .commands_interrupted_for_injection
+                    .contains_key(&id)
+            );
         });
     });
 }
 
 #[test]
-fn steering_interrupt_preserves_queueing_cli_wakes_and_other_owners() {
+fn injection_interrupt_preserves_local_prompts_cli_wakes_and_other_owners() {
     for case in [
-        "queueing",
+        "local-prompt",
         "cli",
         "wake",
         "command",
@@ -133,7 +145,7 @@ fn steering_interrupt_preserves_queueing_cli_wakes_and_other_owners() {
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
             let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
-            let (id, _, _, _) = controller.update(&mut app, start_steering_command);
+            let (id, _, _, _) = controller.update(&mut app, start_injection_command);
             controller.update(&mut app, |controller, ctx| {
                 if case == "other-owner" {
                     controller
@@ -177,13 +189,13 @@ fn steering_interrupt_preserves_queueing_cli_wakes_and_other_owners() {
                     });
                 }
                 QueuedQueryModel::handle(ctx).update(ctx, |queue, ctx| {
-                    if case == "queueing" {
-                        queue.set_delivery_mode(id, QueuedPromptDeliveryMode::Queueing);
-                    } else if case == "setup" {
+                    if case == "setup" {
                         queue.begin_native_setup(id, ctx);
                     }
                     let row = if case == "command" {
                         QueuedQuery::new_command("ls".into(), QueuedQueryOrigin::QueueSlashCommand)
+                    } else if case == "local-prompt" {
+                        QueuedQuery::new("followup".into(), QueuedQueryOrigin::QueueSlashCommand)
                     } else {
                         QueuedQuery::new_shared_session_prompt(
                             "followup".into(),
@@ -194,9 +206,11 @@ fn steering_interrupt_preserves_queueing_cli_wakes_and_other_owners() {
                     };
                     queue.append(id, row, ctx);
                 });
-                controller.maybe_interrupt_command_for_steering(id, ctx);
+                controller.maybe_interrupt_command_for_injection(id, ctx);
                 assert!(
-                    !controller.steering_interrupted_commands.contains_key(&id),
+                    !controller
+                        .commands_interrupted_for_injection
+                        .contains_key(&id),
                     "{case}"
                 );
             });
@@ -205,12 +219,12 @@ fn steering_interrupt_preserves_queueing_cli_wakes_and_other_owners() {
 }
 
 #[test]
-fn steering_interrupt_preserves_stream_and_waits_for_command_completion() {
+fn injection_interrupt_preserves_stream_and_waits_for_command_completion() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
-        let (id, task_id, block_id, _) = controller.update(&mut app, start_steering_command);
+        let (id, task_id, block_id, _) = controller.update(&mut app, start_injection_command);
         controller.update(&mut app, |controller, _| {
             controller
                 .terminal_model
@@ -253,7 +267,7 @@ fn steering_interrupt_preserves_stream_and_waits_for_command_completion() {
         });
         assert_eq!(*interrupts.borrow(), 1);
         controller.update(&mut app, |controller, ctx| {
-            controller.maybe_interrupt_command_for_steering(id, ctx);
+            controller.maybe_interrupt_command_for_injection(id, ctx);
             assert!(
                 controller
                     .steer_head_prompt_for_request(id, &task_id, ctx)
@@ -266,7 +280,7 @@ fn steering_interrupt_preserves_stream_and_waits_for_command_completion() {
                 streams
             );
             assert_eq!(
-                controller.steering_interrupted_commands.get(&id),
+                controller.commands_interrupted_for_injection.get(&id),
                 Some(&block_id)
             );
             assert_eq!(
@@ -293,7 +307,11 @@ fn steering_interrupt_preserves_stream_and_waits_for_command_completion() {
                     .steer_head_prompt_for_request(id, &task_id, ctx)
                     .is_none()
             );
-            assert!(!controller.steering_interrupted_commands.contains_key(&id));
+            assert!(
+                !controller
+                    .commands_interrupted_for_injection
+                    .contains_key(&id)
+            );
         });
         QueuedQueryModel::handle(&app).update(&mut app, |queue, ctx| {
             queue.append(
@@ -318,13 +336,13 @@ fn steering_interrupt_preserves_stream_and_waits_for_command_completion() {
 }
 
 #[test]
-fn steering_interrupt_initial_exit_130_continues_with_result_and_prompt() {
+fn injection_interrupt_initial_exit_130_continues_with_result_and_prompt() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
         let (id, task_id, block_id, action_id) =
-            controller.update(&mut app, start_steering_command);
+            controller.update(&mut app, start_injection_command);
         controller.update(&mut app, |controller, _| {
             controller
                 .terminal_model
@@ -334,6 +352,7 @@ fn steering_interrupt_initial_exit_130_continues_with_result_and_prompt() {
                 .set_was_long_running(false.into());
         });
         QueuedQueryModel::handle(&app).update(&mut app, |queue, ctx| {
+            queue.set_delivery_mode(id, QueuedPromptDeliveryMode::Queueing);
             queue.append(
                 id,
                 QueuedQuery::new_shared_session_prompt(
@@ -355,7 +374,7 @@ fn steering_interrupt_initial_exit_130_continues_with_result_and_prompt() {
                 completed_ts: None,
             });
         let actions = controller.update(&mut app, |controller, ctx| {
-            assert!(controller.is_steering_interrupt_completion(id, &result));
+            assert!(controller.is_injection_interrupt_completion(id, &result));
             for stream in controller
                 .in_flight_response_streams
                 .stream_ids_for_conversation(id, ctx)

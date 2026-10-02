@@ -140,7 +140,7 @@ fn terminal_busy_does_not_write_or_cancel_the_running_command() {
 }
 
 #[test]
-fn steering_interrupt_keeps_completion_waiter_until_normal_precmd() {
+fn injection_interrupt_keeps_completion_waiter_until_normal_precmd() {
     App::test((), |mut app| async move {
         let sessions = app.add_model(|_| Sessions::new_for_test());
         let (_tx, rx) = unbounded();
@@ -164,7 +164,11 @@ fn steering_interrupt_keeps_completion_waiter_until_normal_precmd() {
             executor
                 .block_finished_senders
                 .insert(BlockSelector::Id(block_id.clone()), tx);
-            executor.interrupt_for_steering(AIConversationId::new(), block_id.clone(), ctx);
+            executor.interrupt_for_injected_followup(
+                AIConversationId::new(),
+                block_id.clone(),
+                ctx,
+            );
             assert!(
                 executor
                     .block_finished_senders
