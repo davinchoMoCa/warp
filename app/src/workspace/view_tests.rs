@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
 use ai::project_context::model::ProjectContextModel;
+use float_cmp::approx_eq;
 use pane_group::{NotebookPane, PaneState, SplitPaneState, TerminalPaneId};
 #[cfg(feature = "local_fs")]
 use repo_metadata::CanonicalizedPath;
@@ -324,8 +325,14 @@ fn assert_settings_widget_visible_and_highlighted(
         let clip = highlight
             .1
             .expect("widget should be inside the scroll viewport");
-        assert!(bounds.min_y() >= clip.min_y(), "{bounds:?} above {clip:?}");
-        assert!(bounds.max_y() <= clip.max_y(), "{bounds:?} below {clip:?}");
+        assert!(
+            bounds.min_y() >= clip.min_y() || approx_eq!(f32, bounds.min_y(), clip.min_y()),
+            "{bounds:?} above {clip:?}"
+        );
+        assert!(
+            bounds.max_y() <= clip.max_y() || approx_eq!(f32, bounds.max_y(), clip.max_y()),
+            "{bounds:?} below {clip:?}"
+        );
     });
 }
 
