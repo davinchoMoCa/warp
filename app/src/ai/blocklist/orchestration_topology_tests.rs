@@ -1351,6 +1351,7 @@ fn orchestration_root_fails_closed_when_indexed_parent_record_is_absent() {
                     autoexecute_override: None,
                     last_event_sequence: None,
                     pinned: false,
+                    use_warp_credits_instead_of_chatgpt: false,
                 })
                 .expect("child conversation data should serialize"),
                 last_modified_at: now,
