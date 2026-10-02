@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
@@ -20,6 +21,7 @@ use warp_editor::editor::NavigationKey;
 #[cfg(feature = "local_fs")]
 use warp_files::FileModel;
 use warpui::platform::WindowStyle;
+use warpui::text::point::Point as TextPoint;
 use warpui::{AddSingletonModel, App, ViewHandle};
 use watcher::HomeDirectoryWatcher;
 
@@ -46,6 +48,7 @@ use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::cloud_object::model::view::CloudViewModel;
+use crate::code::editor::view::CodeEditorView;
 use crate::context_chips::prompt::Prompt;
 use crate::editor::Event;
 use crate::gpu_state::GPUState;
@@ -69,6 +72,7 @@ use crate::settings::PrivacySettings;
 use crate::settings::cloud_preferences_syncer::CloudPreferencesSyncer;
 use crate::settings_view::DisplayCount;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
+use crate::settings_view::mcp_servers_page::MCPServersSettingsPageView;
 use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
 use crate::system::SystemStats;
 use crate::tab_configs::tab_config::{TabConfigPaneNode, TabConfigPaneType};
@@ -752,11 +756,64 @@ fn settings_mcp_navigation_preserves_the_checked_out_edit_page_request() {
             });
         });
         opened.await;
-        workspace.read(&app, |workspace, ctx| {
-            let page = ctx.views_of_type::<crate::settings_view::mcp_servers_page::MCPServersSettingsPageView>(workspace.window_id).unwrap();
-            let rendered_children = page[0].as_ref(ctx).render(ctx).debug_child_view_ids();
-            assert_eq!(rendered_children.len(), 1);
-            assert_eq!(ctx.view_name(workspace.window_id, rendered_children[0]), Some("MCPServersEditPageView"));
+        let window_id = workspace.read(&app, |workspace, _| workspace.window_id);
+        let json_editor = workspace.read(&app, |workspace, ctx| {
+            let mut pending_views = ctx
+                .views_of_type::<MCPServersSettingsPageView>(window_id)
+                .unwrap()
+                .into_iter()
+                .map(|view| view.id())
+                .collect::<Vec<_>>();
+            let mut rendered_text = String::new();
+            while let Some(view_id) = pending_views.pop() {
+                let element = ctx.render_view(window_id, view_id).unwrap();
+                rendered_text.push_str(&element.debug_text_content().unwrap_or_default());
+                pending_views.extend(element.debug_child_view_ids());
+            }
+            for expected in ["Add New MCP Server", "JSON", "Save"] {
+                assert!(
+                    rendered_text.contains(expected),
+                    "expected {expected:?} in the rendered MCP form: {rendered_text}"
+                );
+            }
+            ctx.views_of_type::<CodeEditorView>(workspace.window_id)
+                .unwrap()
+                .into_iter()
+                .find(|editor| {
+                    let text = editor.as_ref(ctx).text(ctx);
+                    serde_json::from_str::<serde_json::Value>(text.as_str())
+                        .is_ok_and(|json| json[""]["serverUrl"] == "")
+                })
+                .expect("the MCP form should contain its initialized JSON editor")
+        });
+        let before = json_editor.update(&mut app, |editor, ctx| {
+            let before = editor.text(ctx).into_string();
+            editor.cursor_at(TextPoint::new(1, 0), ctx);
+            editor.focus(ctx);
+            before
+        });
+        let presenter = Rc::new(RefCell::new(warpui::Presenter::new(window_id)));
+        app.update(|ctx| {
+            presenter.borrow_mut().invalidate(
+                warpui::WindowInvalidation {
+                    updated: ctx.view_ids_for_window(window_id).into_iter().collect(),
+                    ..Default::default()
+                },
+                ctx,
+            );
+            presenter
+                .borrow_mut()
+                .build_scene(vec2f(1000., 600.), 1., None, ctx);
+            ctx.simulate_window_event(
+                warpui::Event::TypedCharacters {
+                    chars: " ".to_owned(),
+                },
+                window_id,
+                presenter.clone(),
+            );
+        });
+        json_editor.read(&app, |editor, ctx| {
+            assert_eq!(editor.text(ctx).as_str(), format!(" {before}"));
         });
     });
 }
