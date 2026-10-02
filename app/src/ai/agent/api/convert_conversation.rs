@@ -616,7 +616,7 @@ pub(crate) fn convert_tool_call_result_to_input(
                 Some(api::run_shell_command_result::Result::TerminalBusy(busy)) => {
                     RequestCommandOutputResult::TerminalBusy {
                         command: result.command.clone(),
-                        block_id: busy.command_id.clone().into(),
+                        block_id: busy.running_command_id.clone().into(),
                     }
                 }
                 Some(api::run_shell_command_result::Result::PermissionDenied(

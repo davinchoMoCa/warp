@@ -605,8 +605,8 @@ fn write_tool_call_result_content(out: &mut String, result: &ToolCallResultType)
                     Result::TerminalBusy(busy) => {
                         out.push_str("status: terminal_busy\n");
                         out.push_str(&format!(
-                            "active_command_id: \"{}\"\n",
-                            escape_yaml_string(&busy.command_id)
+                            "running_command_id: \"{}\"\n",
+                            escape_yaml_string(&busy.running_command_id)
                         ));
                     }
                 }

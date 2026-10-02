@@ -19,7 +19,7 @@ fn terminal_busy_is_a_recoverable_serialized_tool_error() {
     assert_eq!(result.command, "ls");
     assert!(matches!(result.result,
         Some(api::run_shell_command_result::Result::TerminalBusy(busy))
-            if busy.command_id == "running-command"));
+            if busy.running_command_id == "running-command"));
 }
 
 #[test]

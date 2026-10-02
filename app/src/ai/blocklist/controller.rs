@@ -360,6 +360,8 @@ pub struct BlocklistAIController {
     pending_local_claude_wakes: HashMap<AIConversationId, SpawnedFutureHandle>,
     /// Passive conversations explicitly requested to follow up after actions complete.
     pending_passive_follow_ups: HashSet<AIConversationId>,
+    /// Prevents repeated interrupts and distinguishes an injection-triggered exit 130 from user
+    /// cancellation, so the interrupted command's result can continue with the injected follow-up.
     commands_interrupted_for_injection: HashMap<AIConversationId, BlockId>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't

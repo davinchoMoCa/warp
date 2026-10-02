@@ -23,7 +23,7 @@ fn terminal_busy_restores_as_recoverable_error() {
                 command: "ls".into(),
                 result: Some(api::run_shell_command_result::Result::TerminalBusy(
                     api::run_shell_command_result::TerminalBusy {
-                        command_id: "lint-block".into(),
+                        running_command_id: "lint-block".into(),
                     },
                 )),
                 ..Default::default()

@@ -177,7 +177,7 @@ impl TryFrom<RequestCommandOutputResult> for api::request::input::tool_call_resu
                             exit_code: Default::default(),
                             result: Some(api::run_shell_command_result::Result::TerminalBusy(
                                 api::run_shell_command_result::TerminalBusy {
-                                    command_id: block_id.to_string(),
+                                    running_command_id: block_id.to_string(),
                                 },
                             )),
                         },
