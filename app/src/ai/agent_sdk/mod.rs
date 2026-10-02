@@ -1490,7 +1490,17 @@ impl AgentDriverRunner {
                     experimental,
                 )
             }
-            Ok(None) => (None, None, None, None, Vec::new(), None, Vec::new(), None, None),
+            Ok(None) => (
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                Vec::new(),
+                None,
+                None,
+            ),
             Err(err) => return Err(AgentDriverError::TaskMetadataFetchFailed(err)),
         };
         match experimental.as_ref() {
