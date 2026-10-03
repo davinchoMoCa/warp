@@ -1,10 +1,14 @@
+use std::any::Any;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ai::LLMProvider;
 use ai::api_keys::ApiKeyManager;
+use anyhow::Result;
+use async_trait::async_trait;
 use chrono::NaiveDate;
 use instant::Instant;
 use string_offset::CharOffset;
@@ -18,7 +22,10 @@ use warp::settings::{
 };
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::terminal::model::session::SessionInfo;
-use warp::terminal::model::session::command_executor::LocalCommandExecutor;
+use warp::terminal::model::session::command_executor::{
+    CommandExecutor, ExecuteCommandOptions, LocalCommandExecutor,
+};
+use warp::terminal::shell::Shell;
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentExchangeId, AIAgentInput,
     AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType, AIAgentTodo, AIAgentTodoList,
@@ -36,6 +43,7 @@ use warp::tui_export::{
     register_tui_session_view_test_singletons, set_tui_default_team_admin_for_test,
     set_tui_workspace_teams_for_test, slash_commands,
 };
+use warp_completer::completer::CommandOutput;
 use warp_core::channel::{Channel, ChannelState};
 use warp_core::features::FeatureFlag;
 use warp_core::settings::Setting as _;
@@ -1044,6 +1052,57 @@ fn shell_mode_reserves_tab_even_when_attachments_render() {
     assert!(!attachment_focus_available(true, true));
     assert!(!attachment_focus_available(false, false));
 }
+
+#[derive(Debug)]
+struct ShellCompletionFixtureExecutor {
+    inner: LocalCommandExecutor,
+    environment: HashMap<String, String>,
+}
+
+#[async_trait]
+impl CommandExecutor for ShellCompletionFixtureExecutor {
+    async fn execute_command(
+        &self,
+        command: &str,
+        shell: &Shell,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<HashMap<String, String>>,
+        execute_command_options: ExecuteCommandOptions,
+    ) -> Result<CommandOutput> {
+        let mut environment_variables = environment_variables.unwrap_or_default();
+        environment_variables.extend(self.environment.clone());
+        // PowerShell appends host module paths at startup, even when PSModulePath is supplied.
+        #[cfg(windows)]
+        let command = format!(
+            "$env:PSModulePath = '{}'; {command}",
+            self.environment["PSModulePath"].replace('\'', "''"),
+        );
+        #[cfg(windows)]
+        let command = command.as_str();
+        self.inner
+            .execute_command(
+                command,
+                shell,
+                current_directory_path,
+                Some(environment_variables),
+                execute_command_options,
+            )
+            .await
+    }
+
+    fn cancel_active_commands(&self) {
+        self.inner.cancel_active_commands();
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        self.inner.supports_parallel_command_execution()
+    }
+}
+
 #[test]
 fn shell_completion_source_warmup_loads_path_executables() {
     App::test((), |mut app| async move {
@@ -1073,12 +1132,28 @@ fn shell_completion_source_warmup_loads_path_executables() {
         )
         .unwrap();
 
-        let session_info = SessionInfo::new_for_test()
-            .with_path(Some(command_dir.path().to_str().unwrap().to_owned()));
-        let executor = Arc::new(LocalCommandExecutor::new(
-            Some(shell_path),
-            session_info.shell.shell_type(),
-        ));
+        let path = command_dir.path().to_str().unwrap().to_owned();
+        let session_info = SessionInfo::new_for_test().with_path(Some(path.clone()));
+        let environment = HashMap::from([("PATH".to_owned(), path)]);
+        #[cfg(windows)]
+        let environment = {
+            let mut environment = environment;
+            environment.insert(
+                "PSModulePath".to_owned(),
+                shell_path
+                    .parent()
+                    .unwrap()
+                    .join("Modules")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+            environment
+        };
+        let executor = Arc::new(ShellCompletionFixtureExecutor {
+            inner: LocalCommandExecutor::new(Some(shell_path), session_info.shell.shell_type()),
+            environment,
+        });
         let session = Arc::new(Session::new(session_info, executor));
 
         view.update(&mut app, |view, ctx| {
@@ -1094,19 +1169,32 @@ fn shell_completion_source_warmup_loads_path_executables() {
         .await
         .expect("Completion warmup must start external command discovery");
 
-        futures::future::join3(
-            session.load_external_commands(),
-            session.load_all_function_names(),
-            session.load_all_builtins(),
+        let (external_commands, functions, builtins) = futures::future::join3(
+            session
+                .load_external_commands()
+                .with_timeout(Duration::from_secs(5)),
+            session
+                .load_all_function_names()
+                .with_timeout(Duration::from_secs(5)),
+            session
+                .load_all_builtins()
+                .with_timeout(Duration::from_secs(5)),
         )
-        .with_timeout(Duration::from_secs(5))
-        .await
-        .expect("All shell completion sources must finish loading");
+        .await;
+        external_commands.expect("External command discovery must finish");
+        functions.expect("Function discovery must finish");
+        builtins.expect("Builtin discovery must finish");
         assert!(session.has_loaded_external_commands());
         assert!(
             session
                 .executable_names()
                 .any(|command| command == "warp-completion-fixture")
+        );
+        #[cfg(windows)]
+        assert!(
+            session
+                .builtin_names()
+                .any(|command| command == "Get-Command")
         );
     });
 }
