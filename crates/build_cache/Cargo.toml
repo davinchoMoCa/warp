@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 async-io.workspace = true
+chrono.workspace = true
 command.workspace = true
 futures.workspace = true
 futures-lite.workspace = true
