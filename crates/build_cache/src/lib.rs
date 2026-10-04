@@ -44,6 +44,7 @@ pub mod spacectl;
 #[cfg(test)]
 use discovery::produce_candidates;
 use discovery::{CacheCandidate, CandidateKey, DETECTION_CONCURRENCY, candidate_receiver};
+use metadata::{CacheMetadataError, CacheUsage, normalized_cache_root};
 use spacectl::{MountContext, MountResponse, run_spacectl_mount};
 
 const SPACECTL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -342,6 +343,34 @@ pub struct CacheSetupReport {
 }
 
 impl CacheSetupReport {
+    /// Convert successful mounts to volume-relative usage records.
+    pub fn cache_usage(&self, cache_root: &Path) -> Result<Vec<CacheUsage>, CacheMetadataError> {
+        let cache_root = normalized_cache_root(cache_root)?;
+        self.mounted_paths
+            .iter()
+            // Older spacectl responses may omit paths; they cannot be attributed to a volume entry.
+            .filter(|mount| {
+                !mount.cache_path.as_os_str().is_empty() && !mount.mount_path.as_os_str().is_empty()
+            })
+            .map(|mount| {
+                Ok(CacheUsage {
+                    path: mount
+                        .cache_path
+                        .strip_prefix(&cache_root)
+                        .map_err(|_| CacheMetadataError::InvalidPath)?
+                        .to_owned(),
+                    cache_framework: Some(mount.mode.clone()),
+                    mount_target: vec![
+                        mount
+                            .mount_path
+                            .to_str()
+                            .ok_or(CacheMetadataError::InvalidPath)?
+                            .to_owned(),
+                    ],
+                })
+            })
+            .collect()
+    }
     /// List scoped cache setups which could not be mounted successfully.
     pub fn degradations(&self) -> impl Iterator<Item = &CachePreparationReport> {
         self.invocations

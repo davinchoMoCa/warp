@@ -8,9 +8,6 @@ license.workspace = true
 
 [dependencies]
 async-io.workspace = true
-cap-fs-ext.workspace = true
-cap-std.workspace = true
-cap-tempfile.workspace = true
 chrono.workspace = true
 command.workspace = true
 futures.workspace = true

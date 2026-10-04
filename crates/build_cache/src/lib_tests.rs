@@ -14,10 +14,10 @@ use instant::Instant;
 use warp_errors::ErrorExt as _;
 
 use super::{
-    CacheConfiguration, CacheScope, CacheSetupError, CacheSetupPlan, CandidateKey,
-    DetectedCacheModes, RepoCacheKey, RepoIdentity, RepositoryCacheSource, aggregate_mode_stats,
-    construct_plan, create_retained_scratch_directory, is_valid_env_name, produce_candidates,
-    run_command_with_timeout, setup_cache,
+    CacheConfiguration, CacheScope, CacheSetupError, CacheSetupPlan, CacheSetupReport,
+    CandidateKey, DetectedCacheModes, RepoCacheKey, RepoIdentity, RepositoryCacheSource,
+    aggregate_mode_stats, construct_plan, create_retained_scratch_directory, is_valid_env_name,
+    produce_candidates, run_command_with_timeout, setup_cache,
 };
 #[cfg(unix)]
 use super::{create_cache_dir_all, current_owner};
@@ -669,7 +669,7 @@ fn only_successful_real_mounts_contribute_usage_paths() {
     let mounted_path = cache_root.join("repos/real/target");
     let mounted_path_json = serde_json::to_value(&mounted_path).unwrap();
     let report = block_on(setup_cache(
-        cache_root,
+        cache_root.clone(),
         vec![source(temp.path(), "github.com", "warp", "client")],
         Vec::new(),
         move |command| {
@@ -701,6 +701,23 @@ fn only_successful_real_mounts_contribute_usage_paths() {
             cache_hit: false,
         }]
     );
+    let usage = report.cache_usage(&cache_root.join("child/..")).unwrap();
+    assert_eq!(
+        usage,
+        [crate::metadata::CacheUsage {
+            path: PathBuf::from("repos/real/target"),
+            cache_framework: Some("rust".to_owned()),
+            mount_target: vec!["/work/target".to_owned()],
+        }]
+    );
+    crate::metadata::write_cache_metadata(&cache_root, usage).unwrap();
+    let document: serde_json::Value =
+        serde_json::from_slice(&fs::read(cache_root.join(".ns/cache-metadata.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        document["userRequest"],
+        serde_json::json!({"repos/real/target": {"source": "warp", "cacheFramework": "rust", "mountTarget": ["/work/target"]}})
+    );
 }
 
 #[test]
@@ -718,15 +735,15 @@ fn no_detected_modes_still_allows_additional_usage_metadata() {
 
     crate::metadata::write_cache_metadata(
         &cache_root,
-        &report.mounted_paths,
-        [(
-            PathBuf::from("git-mirrors"),
-            crate::metadata::CachePathUsage {
-                source: "warp".to_owned(),
+        report
+            .cache_usage(&cache_root)
+            .unwrap()
+            .into_iter()
+            .chain([crate::metadata::CacheUsage {
+                path: PathBuf::from("git-mirrors"),
                 cache_framework: Some("git".to_owned()),
                 mount_target: Vec::new(),
-            },
-        )],
+            }]),
     )
     .unwrap();
 
@@ -737,6 +754,50 @@ fn no_detected_modes_still_allows_additional_usage_metadata() {
         document["userRequest"],
         serde_json::json!({"git-mirrors": {"source": "warp", "cacheFramework": "git", "mountTarget": []}})
     );
+}
+
+#[test]
+fn usage_ignores_mounts_without_complete_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let report = CacheSetupReport {
+        mounted_paths: vec![
+            Mount {
+                mode: "rust".to_owned(),
+                cache_path: PathBuf::new(),
+                mount_path: PathBuf::from("/work/target"),
+                cache_hit: false,
+            },
+            Mount {
+                mode: "go".to_owned(),
+                cache_path: root.path().join("cache"),
+                mount_path: PathBuf::new(),
+                cache_hit: false,
+            },
+        ],
+        ..CacheSetupReport::default()
+    };
+
+    assert!(report.cache_usage(root.path()).unwrap().is_empty());
+}
+
+#[test]
+fn usage_rejects_mounts_outside_cache_volume() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let report = CacheSetupReport {
+        mounted_paths: vec![Mount {
+            mode: "rust".to_owned(),
+            cache_path: outside.path().join("target"),
+            mount_path: PathBuf::from("/work/target"),
+            cache_hit: false,
+        }],
+        ..CacheSetupReport::default()
+    };
+
+    assert!(matches!(
+        report.cache_usage(root.path()),
+        Err(crate::metadata::CacheMetadataError::InvalidPath)
+    ));
 }
 #[test]
 fn repo_env_conflict_resolves_by_key_order() {

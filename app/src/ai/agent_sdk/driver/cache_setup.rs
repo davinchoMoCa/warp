@@ -80,8 +80,9 @@ pub(super) async fn setup_caches(
     )
     .await;
 
-    if let Err(error) =
-        build_cache::metadata::write_cache_metadata(&cache_root, &report.mounted_paths, [])
+    if let Err(error) = report
+        .cache_usage(&cache_root)
+        .and_then(|usage| build_cache::metadata::write_cache_metadata(&cache_root, usage))
     {
         log::warn!("Namespace cache usage metadata was not updated: {error}");
     }
