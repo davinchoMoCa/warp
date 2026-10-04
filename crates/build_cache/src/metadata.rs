@@ -1,14 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
+use tempfile::NamedTempFile;
 
 const METADATA_FILE: &str = "cache-metadata.json";
-static NEXT_TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Configured usage of a cache-volume path.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +19,9 @@ pub struct CacheUsage {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
 struct CacheMetadata {
     version: u32,
     updated_at: String,
@@ -28,9 +29,11 @@ struct CacheMetadata {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
 struct CachePathUsage {
-    source: &'static str,
+    source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_framework: Option<String>,
     mount_target: Vec<String>,
@@ -70,30 +73,13 @@ pub fn write_cache_metadata(
     }
     fs::create_dir_all(&directory).map_err(|_| CacheMetadataError::Io)?;
 
-    for _ in 0..100 {
-        let id = NEXT_TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".cache-metadata-{}-{id}.tmp", std::process::id()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&temporary) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(CacheMetadataError::Io),
-        };
-        let result = file.write_all(&bytes).and_then(|()| file.flush());
-        drop(file);
-        let result = result.and_then(|()| fs::rename(&temporary, directory.join(METADATA_FILE)));
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        return result.map_err(|_| CacheMetadataError::Io);
-    }
-    Err(CacheMetadataError::Io)
+    let mut file = NamedTempFile::new_in(&directory).map_err(|_| CacheMetadataError::Io)?;
+    file.write_all(&bytes)
+        .and_then(|()| file.flush())
+        .map_err(|_| CacheMetadataError::Io)?;
+    file.persist(directory.join(METADATA_FILE))
+        .map(|_| ())
+        .map_err(|_| CacheMetadataError::Io)
 }
 
 fn relative_key(path: &Path) -> Result<String, CacheMetadataError> {
@@ -155,7 +141,7 @@ fn usage_entries(
             (
                 path,
                 CachePathUsage {
-                    source: "warp",
+                    source: "warp".to_owned(),
                     cache_framework: framework,
                     mount_target: targets.into_iter().collect(),
                 },

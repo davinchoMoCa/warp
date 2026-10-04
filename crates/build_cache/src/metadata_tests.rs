@@ -1,12 +1,10 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::DateTime;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{CacheMetadataError, CacheUsage, write_cache_metadata};
+use super::{CacheMetadata, CacheMetadataError, CacheUsage, write_cache_metadata};
 
 fn usage(path: &str, mode: &str, targets: &[&str]) -> CacheUsage {
     CacheUsage {
@@ -29,22 +27,6 @@ fn read_document(root: &Path) -> Value {
     serde_json::from_slice(&fs::read(metadata_path(root)).unwrap()).unwrap()
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct NamespaceMetadata {
-    version: u32,
-    updated_at: String,
-    user_request: BTreeMap<String, NamespaceUsage>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct NamespaceUsage {
-    source: String,
-    cache_framework: Option<String>,
-    mount_target: Vec<String>,
-}
-
 #[test]
 fn snapshot_records_mixed_usage_with_sorted_unique_targets() {
     let root = tempfile::tempdir().unwrap();
@@ -60,7 +42,7 @@ fn snapshot_records_mixed_usage_with_sorted_unique_targets() {
 
     write_cache_metadata(root.path(), usages).unwrap();
 
-    let document: NamespaceMetadata =
+    let document: CacheMetadata =
         serde_json::from_slice(&fs::read(metadata_path(root.path())).unwrap()).unwrap();
     assert_eq!(document.version, 1);
     assert_eq!(document.user_request.len(), 2);
@@ -219,7 +201,7 @@ fn blocked_metadata_directory_returns_an_error() {
 }
 
 #[test]
-fn failed_rename_removes_temporary_file() {
+fn failed_replacement_removes_temporary_file() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(metadata_path(root.path())).unwrap();
     let sentinel = metadata_path(root.path()).join("keep");
@@ -257,11 +239,8 @@ fn final_symlink_is_replaced_without_changing_its_target() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn hardlinked_document_is_replaced_without_changing_other_links() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::NamedTempFile::new().unwrap();
     fs::write(outside.path(), b"unchanged").unwrap();
@@ -272,14 +251,18 @@ fn hardlinked_document_is_replaced_without_changing_other_links() {
 
     assert_eq!(fs::read(outside.path()).unwrap(), b"unchanged");
     assert_eq!(read_document(root.path())["userRequest"], json!({}));
-    assert_eq!(
-        fs::metadata(metadata_path(root.path()))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(metadata_path(root.path()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 }
 
 #[cfg(unix)]
