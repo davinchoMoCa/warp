@@ -20,14 +20,15 @@ use warp_graphql::ai::AgentTaskState;
 use warpui::{App, SingletonEntity, WindowId};
 
 use super::{
-    AgentDriverRunner, CommandAuthentication, command_authentication, command_requires_auth,
-    command_to_telemetry_event, reconcile_task_harness, resolve_agent_driver_team_scope,
-    validated_driver_repositories_for_preparation,
+    AgentDriverRunner, CommandAuthentication, build_server_side_task, command_authentication,
+    command_requires_auth, command_to_telemetry_event, reconcile_task_harness,
+    resolve_agent_driver_team_scope, validated_driver_repositories_for_preparation,
 };
 use crate::ai::agent_sdk::driver::harness::HarnessKind;
 use crate::ai::agent_sdk::driver::{AgentDriverError, AgentDriverOptions, AgentRunPrompt, Task};
 use crate::ai::ambient_agents::task::{AmbientAgentTask, AmbientAgentTaskState, TaskScope};
 use crate::ai::cloud_environments::{AmbientAgentEnvironment, SourceRepo};
+use crate::ai::custom_model_routers::is_factory_custom_router_id;
 use crate::auth::AuthStateProvider;
 use crate::auth::user::{PrincipalType, User};
 use crate::network::NetworkStatus;
@@ -45,6 +46,26 @@ use crate::workspaces::user_workspaces::{HeadlessTeamScope, TeamScope, UserWorks
 use crate::workspaces::workspace::{Workspace, WorkspaceUid};
 
 const TASK_ID: &str = "00000000-0000-0000-0000-000000000001";
+const FACTORY_ROUTER_ID: &str = "custom-router:factory:factory-uid:simple-complexity";
+
+#[test]
+fn factory_router_key_requires_a_factory_and_valid_slug() {
+    assert!(is_factory_custom_router_id(FACTORY_ROUTER_ID));
+    for invalid in [
+        "custom-router:factory:",
+        "custom-router:factory::simple-complexity",
+        "custom-router:factory:factory-uid:",
+        "custom-router:factory:factory-uid:BadSlug",
+        "custom-router:factory:factory-uid:simple:complexity",
+        "custom-router:cloud:some-router",
+    ] {
+        assert!(!is_factory_custom_router_id(invalid), "{invalid}");
+    }
+    assert!(!is_factory_custom_router_id(&format!(
+        "custom-router:factory:{}:simple-complexity",
+        "f".repeat(235)
+    )));
+}
 
 fn parse_run_agent_args(args: &[&str]) -> RunAgentArgs {
     let parsed = Args::try_parse_from(std::iter::once("warp").chain(args.iter().copied()))
@@ -173,6 +194,102 @@ pub(crate) fn agent_driver_options() -> AgentDriverOptions {
     }
 }
 
+fn existing_task_metadata() -> AmbientAgentTask {
+    AmbientAgentTask {
+        task_id: TASK_ID.parse().unwrap(),
+        parent_run_id: None,
+        title: String::new(),
+        state: AmbientAgentTaskState::InProgress,
+        prompt: String::new(),
+        created_at: Utc::now(),
+        started_at: None,
+        updated_at: Utc::now(),
+        run_time: None,
+        status_message: None,
+        source: None,
+        execution_location: None,
+        session_id: None,
+        session_link: None,
+        creator: None,
+        executor: None,
+        conversation_id: None,
+        request_usage: None,
+        is_sandbox_running: false,
+        agent_config_snapshot: None,
+        artifacts: vec![],
+        last_event_sequence: None,
+        children: vec![],
+        debug_agent_available: false,
+        scope: None,
+    }
+}
+
+#[test]
+fn existing_task_factory_router_model_requires_matching_snapshot() {
+    for (snapshot_model, expected_ok) in [
+        (Some(FACTORY_ROUTER_ID), true),
+        (
+            Some("custom-router:factory:other-factory:simple-complexity"),
+            false,
+        ),
+        (None, false),
+    ] {
+        App::test((), |mut app| async move {
+            let _attachments = FeatureFlag::AmbientAgentsImageUpload.override_enabled(false);
+            let _handoff = FeatureFlag::OzHandoff.override_enabled(false);
+            let provider = ServerApiProvider::new_for_test();
+            let managed_secrets_client = provider.get_managed_secrets_client();
+            app.add_singleton_model(|_| provider);
+            let auth_provider = AuthStateProvider::new_for_test();
+            let auth_state = auth_provider.get().clone();
+            app.add_singleton_model(|_| auth_provider);
+            app.add_singleton_model(|_| {
+                AppManagedSecretManager::new(managed_secrets_client, auth_state)
+            });
+
+            let args = parse_run_agent_args(&[
+                "agent",
+                "run",
+                "--task-id",
+                TASK_ID,
+                "--model",
+                FACTORY_ROUTER_ID,
+            ]);
+            let (_, mut task) = app
+                .update(|ctx| build_server_side_task(&args, &None, ctx))
+                .expect("existing task model should reach metadata validation");
+            assert_eq!(
+                task.model.as_ref().map(|id| id.as_str()),
+                Some(FACTORY_ROUTER_ID)
+            );
+
+            let mut metadata = existing_task_metadata();
+            metadata.agent_config_snapshot = snapshot_model.map(|model_id| AgentConfigSnapshot {
+                model_id: Some(model_id.to_string()),
+                ..Default::default()
+            });
+            let mut ai_client = MockAIClient::new();
+            ai_client
+                .expect_get_ambient_agent_task()
+                .times(1)
+                .return_once(move |_| Ok(metadata));
+            let ai_client: Arc<dyn AIClient> = Arc::new(ai_client);
+            let runner = app.add_singleton_model(|_| AgentDriverRunner);
+            let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
+            let mut options = agent_driver_options();
+            let result = AgentDriverRunner::fetch_secrets_and_attachments(
+                &foreground,
+                &ai_client,
+                TASK_ID.to_string(),
+                &mut options,
+                &mut task,
+            )
+            .await;
+            assert_eq!(result.is_ok(), expected_ok, "{result:?}");
+        });
+    }
+}
+
 #[test]
 fn existing_task_factory_experiments_bootstrap_and_log_without_payload() {
     for (scenario, expected_line) in [
@@ -277,33 +394,7 @@ fn factory_experiment_bootstrap_subprocess() {
                 "nullable": null
             }))
             .unwrap();
-        let mut task_metadata = AmbientAgentTask {
-            task_id: TASK_ID.parse().unwrap(),
-            parent_run_id: None,
-            title: String::new(),
-            state: AmbientAgentTaskState::InProgress,
-            prompt: String::new(),
-            created_at: Utc::now(),
-            started_at: None,
-            updated_at: Utc::now(),
-            run_time: None,
-            status_message: None,
-            source: None,
-            execution_location: None,
-            session_id: None,
-            session_link: None,
-            creator: None,
-            executor: None,
-            conversation_id: None,
-            request_usage: None,
-            is_sandbox_running: false,
-            agent_config_snapshot: None,
-            artifacts: vec![],
-            last_event_sequence: None,
-            children: vec![],
-            debug_agent_available: false,
-            scope: None,
-        };
+        let mut task_metadata = existing_task_metadata();
         if scenario == "present" {
             task_metadata.agent_config_snapshot = Some(AgentConfigSnapshot {
                 experimental: Some(experimental.clone()),

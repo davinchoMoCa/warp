@@ -911,6 +911,25 @@ impl LLMPreferences {
         self.get_preferred_base_model(scope, app, terminal_view_id)
     }
 
+    /// Returns the model ID for an Agent Mode request, including a Factory router
+    /// selected for the current pane that has no entry in the ordinary model list.
+    pub fn get_active_base_model_id_for_request(
+        &self,
+        scope: &(impl TeamScope + ?Sized),
+        app: &AppContext,
+        terminal_view_id: Option<EntityId>,
+    ) -> LLMId {
+        terminal_view_id
+            .and_then(|id| self.base_llm_for_terminal_view.get(&id))
+            .filter(|id| custom_model_routers::is_factory_custom_router_id(id.as_str()))
+            .cloned()
+            .unwrap_or_else(|| {
+                self.get_active_base_model(scope, app, terminal_view_id)
+                    .id
+                    .clone()
+            })
+    }
+
     pub fn get_active_base_model_for_team_uid<'a>(
         &'a self,
         team_uid: Option<ServerId>,

@@ -337,6 +337,13 @@ pub fn classify_driver_error(error: &AgentDriverError) -> (AgentTaskState, TaskS
                 PlatformErrorCode::EnvironmentSetupFailed,
             ),
         ),
+        AgentDriverError::TaskModelMismatch { .. } => (
+            AgentTaskState::Failed,
+            TaskStatusUpdate::with_error_code(
+                error.to_string(),
+                PlatformErrorCode::EnvironmentSetupFailed,
+            ),
+        ),
         AgentDriverError::ConversationResumeStateMissing {
             harness,
             conversation_id,

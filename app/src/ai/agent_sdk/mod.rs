@@ -62,6 +62,7 @@ use crate::ai::aws_credentials::{BedrockOidcCredentialsConfig, refresh_aws_crede
 use crate::ai::cloud_environments::{
     AmbientAgentEnvironment, CloudAmbientAgentEnvironment, SourceRepo,
 };
+use crate::ai::custom_model_routers;
 use crate::ai::llms::LLMId;
 use crate::ai::skills::{
     ResolveSkillError, ResolvedSkill, clone_repo_for_skill, resolve_skill_spec,
@@ -544,7 +545,13 @@ fn build_server_side_task(
         args.model
             .model
             .as_deref()
-            .map(|model_id| common::validate_agent_mode_base_model_id(model_id, ctx))
+            .map(|model_id| {
+                if custom_model_routers::is_factory_custom_router_id(model_id) {
+                    Ok(LLMId::from(model_id))
+                } else {
+                    common::validate_agent_mode_base_model_id(model_id, ctx)
+                }
+            })
             .transpose()?
     } else {
         None
@@ -1446,6 +1453,7 @@ impl AgentDriverRunner {
             task_conversation_id,
             task_harness,
             task_harness_model_config,
+            task_model_id,
             additional_source_repos,
             task_team_scope,
             experimental,
@@ -1460,6 +1468,9 @@ impl AgentDriverRunner {
                     .map(|h| h.harness_type)
                     .unwrap_or(Harness::Oz);
                 let task_harness_model_config = task_harness_config.and_then(|h| h.model_config());
+                let task_model_id = agent_config_snapshot
+                    .as_ref()
+                    .and_then(|config| config.model_id.clone());
                 let experimental = agent_config_snapshot
                     .as_ref()
                     .and_then(|config| config.experimental.clone());
@@ -1475,14 +1486,25 @@ impl AgentDriverRunner {
                     task_metadata.conversation_id,
                     Some(task_harness),
                     task_harness_model_config,
+                    task_model_id,
                     additional_source_repos,
                     task_team_scope,
                     experimental,
                 )
             }
-            Ok(None) => (None, None, None, None, Vec::new(), None, None),
+            Ok(None) => (None, None, None, None, None, Vec::new(), None, None),
             Err(err) => return Err(AgentDriverError::TaskMetadataFetchFailed(err)),
         };
+        if let Some(model_id) = task
+            .model
+            .as_ref()
+            .filter(|id| custom_model_routers::is_factory_custom_router_id(id.as_str()))
+            && task_model_id.as_deref() != Some(model_id.as_str())
+        {
+            return Err(AgentDriverError::TaskModelMismatch {
+                task_id: task_id_str,
+            });
+        }
         match experimental.as_ref() {
             Some(values) => warp_core::safe_info!(
                 safe: ("factory_experimental_config state=read_uninterpreted key_count={}", values.len()),
