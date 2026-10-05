@@ -32,6 +32,10 @@ if [ -n "$(git status --porcelain)" ]; then
     echo "Error: hay cambios sin commit. Haz commit antes de sacar una versión." >&2
     exit 1
 fi
+# Otras máquinas (p. ej. Windows) también suben a la rama moca.
+echo "==> Trayendo cambios de origin/moca"
+git pull -q --rebase origin moca
+
 if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
     echo "Error: el tag v$VERSION ya existe." >&2
     exit 1
