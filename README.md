@@ -15,6 +15,7 @@ El README original de Warp está en [README.upstream.md](README.upstream.md).
 | Se ocultan todas las invitaciones a cuenta ("Sign in", "Sign up", "Log in", "Create an account", "Upgrade") y el botón `/remote-control`, que depende de la nube | 15 sitios marcados con `// moca: sin cuentas` |
 | Constante `ACCOUNTS_DISABLED` que controla lo anterior | `crates/warp_core/src/moca.rs` |
 | Línea de actividad del agente en cada pestaña: qué herramienta usa (`Bash: npm test`), avance de su lista de tareas (`3/7`), hace cuánto fue el último evento, y `¿trabado?` en amarillo tras 5 min sin actividad. Requiere el plugin `moca-warp@moca` de [claude-skills](robco@100.124.2.82:repos/claude-skills.git) | `app/src/terminal/cli_agent_sessions/moca_activity.rs`, `app/src/workspace/view/vertical_tabs.rs` |
+| Tarjeta al pasar el mouse sobre la pestaña: línea de actividad y lista **Procesos** con los subprocesos del shell (comando, tiempo corriendo y % de CPU), máx. 8 filas | `app/src/terminal/moca_processes.rs`, `app/src/workspace/view/vertical_tabs.rs` |
 | La bienvenida se salta "How do you want to work?" y entra en modo "solo terminal", con barra y avisos de agentes CLI encendidos | `crates/onboarding/src/model.rs` |
 | Nombre de la app: **Moca Warp**; identificador `gt.moca.MocaWarp` (datos separados de Warp.app) | `app/Cargo.toml`, `app/src/bin/oss.rs`, `crates/warp_core/src/paths.rs`, `crates/warp_core/src/channel/state.rs`, `script/macos/run` |
 

@@ -6957,6 +6957,72 @@ fn detail_pane_props<'a>(
     )
 }
 
+// moca: subprocesos de la pestaña
+fn render_moca_process_list(
+    terminal_view: &TerminalView,
+    text_colors: &DetailSidecarTextColors,
+    appearance: &Appearance,
+) -> Option<Box<dyn Element>> {
+    use crate::terminal::moca_processes::{format_cpu, format_run_time, process_tree};
+
+    let pid = terminal_view.moca_shell_pid()?;
+    let tree = process_tree(pid);
+    if tree.rows.is_empty() {
+        return None;
+    }
+
+    let mut column = Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(2.);
+    column.add_child(render_detail_wrapping_text(
+        "Procesos",
+        11.,
+        text_colors.disabled,
+        None,
+        appearance,
+    ));
+    for row in &tree.rows {
+        let command = Text::new_inline(
+            format!("{}{}", "  ".repeat(row.depth), row.command),
+            appearance.ui_font_family(),
+            11.,
+        )
+        .with_clip(ClipConfig::ellipsis())
+        .with_color(text_colors.main.into())
+        .finish();
+        let run_time = [format_run_time(row.run_time), format_cpu(row.cpu_percent)]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("  ");
+        let stats = Container::new(
+            Text::new_inline(run_time, appearance.ui_font_family(), 11.)
+                .with_color(text_colors.sub.into())
+                .finish(),
+        )
+        .with_margin_left(8.)
+        .finish();
+        column.add_child(
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_child(Shrinkable::new(1., command).finish())
+                .with_child(stats)
+                .finish(),
+        );
+    }
+    if tree.hidden > 0 {
+        column.add_child(render_detail_wrapping_text(
+            format!("+{} más", tree.hidden),
+            11.,
+            text_colors.disabled,
+            None,
+            appearance,
+        ));
+    }
+    Some(column.finish())
+}
+
 fn render_terminal_detail_section(
     props: &PaneProps<'_>,
     terminal_view: &TerminalView,
@@ -7020,6 +7086,13 @@ fn render_terminal_detail_section(
         text_colors.sub,
         appearance,
     ));
+    // moca: actividad y subprocesos
+    if let Some(activity) = render_moca_activity_line(terminal_view, 12., appearance, app) {
+        section.add_child(activity);
+    }
+    if let Some(processes) = render_moca_process_list(terminal_view, &text_colors, appearance) {
+        section.add_child(processes);
+    }
 
     let mut metadata_row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)

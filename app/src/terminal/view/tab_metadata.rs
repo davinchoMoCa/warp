@@ -33,6 +33,11 @@ impl TerminalView {
             .unwrap_or(fallback_title)
     }
 
+    /// moca: pid del shell de esta pestaña, para listar sus subprocesos.
+    pub fn moca_shell_pid(&self) -> Option<u32> {
+        self.model.lock().shell_process_info().map(|info| info.pid)
+    }
+
     pub fn current_git_branch(&self, ctx: &AppContext) -> Option<String> {
         self.prompt_chip_value(&ContextChipKind::ShellGitBranch, ctx)
             .or_else(|| {
