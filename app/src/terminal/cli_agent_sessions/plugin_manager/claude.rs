@@ -19,6 +19,11 @@ const PLATFORM_PLUGIN_KEY: &str = "oz-harness-support@claude-code-warp";
 const MARKETPLACE_REPO: &str = "warpdotdev/claude-code-warp";
 const MARKETPLACE_NAME: &str = "claude-code-warp";
 
+// moca: plugin moca-warp
+const MOCA_MARKETPLACE_REPO: &str = "robco@100.124.2.82:repos/claude-skills.git";
+// moca: plugin moca-warp
+const MOCA_PLUGIN_KEY: &str = "moca-warp@moca";
+
 // Keep in sync with the plugin version in warpdotdev/claude-code-warp.
 // (See the Versioning section of that repo's README.)
 const MINIMUM_PLUGIN_VERSION: &str = "2.1.0";
@@ -50,6 +55,18 @@ impl ClaudeCodePluginManager {
             .map(|path| HashMap::from([("PATH".to_owned(), path.to_owned())]));
         run_cli_command_logged("claude", args, &self.executor, env_vars, log).await
     }
+
+    // moca: plugin moca-warp
+    async fn install_moca_plugin(&self, log: &mut String) -> Result<(), PluginInstallError> {
+        self.run_logged(
+            &["plugin", "marketplace", "add", MOCA_MARKETPLACE_REPO],
+            log,
+        )
+        .await?;
+        self.run_logged(&["plugin", "install", MOCA_PLUGIN_KEY], log)
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -66,7 +83,8 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         let Ok(claude_dir) = claude_home_dir() else {
             return false;
         };
-        check_installed(&claude_dir)
+        // moca: plugin moca-warp
+        check_installed(&claude_dir) && check_plugin_installed(&claude_dir, MOCA_PLUGIN_KEY)
     }
 
     fn is_platform_plugin_installed(&self) -> bool {
@@ -104,6 +122,8 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         .await?;
         self.run_logged(&["plugin", "install", PLUGIN_KEY], &mut log)
             .await?;
+        // moca: plugin moca-warp
+        self.install_moca_plugin(&mut log).await?;
         Ok(())
     }
 
@@ -127,6 +147,8 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         .await?;
         self.run_logged(&["plugin", "install", PLUGIN_KEY], &mut log)
             .await?;
+        // moca: plugin moca-warp
+        self.install_moca_plugin(&mut log).await?;
 
         // Sanity check: verify the on-disk version actually changed.
         let still_outdated = claude_home_dir()
@@ -144,12 +166,14 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
         Ok(())
     }
 
+    // moca: plugin moca-warp
     fn install_success_message(&self) -> &'static str {
-        "Warp plugin installed. Please run /reload-plugins to activate."
+        "Plugins de Warp y Moca instalados. Corre /reload-plugins para activarlos."
     }
 
+    // moca: plugin moca-warp
     fn update_success_message(&self) -> &'static str {
-        "Warp plugin updated. Please run /reload-plugins to activate."
+        "Plugins de Warp y Moca actualizados. Corre /reload-plugins para activarlos."
     }
 
     fn install_instructions(&self) -> &'static PluginInstructions {
@@ -225,6 +249,20 @@ static INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plu
             executable: true,
             link: None,
         },
+        // moca: plugin moca-warp
+        PluginInstructionStep {
+            description: "Add the Moca plugin marketplace",
+            command: "claude plugin marketplace add robco@100.124.2.82:repos/claude-skills.git",
+            executable: true,
+            link: None,
+        },
+        // moca: plugin moca-warp
+        PluginInstructionStep {
+            description: "Install the Moca Warp plugin",
+            command: "claude plugin install moca-warp@moca",
+            executable: true,
+            link: None,
+        },
     ],
     post_install_notes: &[
         "Restart Claude Code to activate the plugin.",
@@ -252,6 +290,13 @@ static UPDATE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plug
         PluginInstructionStep {
             description: "Install the latest plugin version",
             command: "claude plugin install warp@claude-code-warp",
+            executable: true,
+            link: None,
+        },
+        // moca: plugin moca-warp
+        PluginInstructionStep {
+            description: "Install the Moca Warp plugin",
+            command: "claude plugin install moca-warp@moca",
             executable: true,
             link: None,
         },

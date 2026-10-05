@@ -340,7 +340,8 @@ fn is_installed_via_trait_with_claude_config_dir_env() {
 
     let json = serde_json::json!({
         "plugins": {
-            "warp@claude-code-warp": [{"version": "1.0.0"}]
+            "warp@claude-code-warp": [{"version": "1.0.0"}],
+            "moca-warp@moca": [{"version": "1.0.0"}]
         }
     });
     fs::write(
