@@ -7,10 +7,9 @@
 
 name: Moca Warp release
 
+# Ya no corre en cada tag: el instalador se compila en robcod14 (instalar.ps1 -Compilar -Pull
+# -Publicar). Esto queda de respaldo, a mano desde la pestaña Actions.
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       publicar:

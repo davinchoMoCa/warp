@@ -47,8 +47,9 @@ La app queda en `target/debug/bundle/osx/Moca Warp.app`. No hace falta el `./scr
 ```powershell
 git clone -b moca https://github.com/davinchoMoCa/warp.git
 cd warp
-.\script\moca\instalar.ps1            # baja e instala el último Release
+.\script\moca\instalar.ps1            # Surface y demás: baja e instala el último Release
 .\script\moca\instalar.ps1 -Version 0.2.0
+.\script\moca\instalar.ps1 -Compilar -Pull -Publicar   # robcod14: compila la versión nueva y la sube al Release
 ```
 
 Queda en `%LOCALAPPDATA%\Programs\MocaWarp`, con acceso directo **MocaWarp** en el menú Inicio y desinstalador en Programas instalados. El instalador no está firmado: la primera vez Windows SmartScreen puede pedir confirmación.
@@ -60,7 +61,7 @@ Para compilar local en vez de descargar (`-Compilar`, o `-Compilar -Pull` para t
 | Plataforma | Rol | Cómo llega una versión |
 |---|---|---|
 | macOS | Principal: ahí se desarrolla y se sacan las versiones | `./script/moca/release X.Y.Z --publicar` |
-| Windows | Secundaria | El workflow `moca-release.yml` compila el instalador al subir el tag y lo adjunta al Release; se instala con `instalar.ps1` |
+| Windows | Secundaria | robcod14 compila el instalador con `instalar.ps1 -Compilar -Pull -Publicar` y lo sube al Release; la Surface lo instala con `instalar.ps1`. El workflow `moca-release.yml` ya no corre en cada tag: queda de respaldo, a mano |
 | Linux | Pendiente | — |
 
 Los cambios específicos de una plataforma van detrás de `#[cfg(target_os = "...")]`; los de Moca (offline, sin cuentas, onboarding) aplican a todas. El workflow también se puede lanzar a mano (Actions → Moca Warp release → Run workflow) para comprobar que un cambio no rompe Windows; deja el instalador como artifact del run sin tocar ningún Release.

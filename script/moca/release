@@ -78,7 +78,8 @@ if [ "$PUBLICAR" = true ]; then
     fi
 fi
 
-echo "==> Windows: GitHub Actions compila el instalador y lo adjunta al Release v$VERSION"
-echo "    https://github.com/davinchoMoCa/warp/actions/workflows/moca-release.yml"
+echo "==> Windows: en robcod14 corre  .\\script\\moca\\instalar.ps1 -Compilar -Pull -Publicar"
+echo "    y en la Surface  .\\script\\moca\\instalar.ps1"
+echo "    (respaldo: botón Run workflow en https://github.com/davinchoMoCa/warp/actions/workflows/moca-release.yml)"
 
 echo "Listo: Moca Warp v$VERSION instalada en /Applications."

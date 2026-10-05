@@ -6,11 +6,16 @@
 #   .\script\moca\instalar.ps1              # baja el instalador del último GitHub Release
 #   .\script\moca\instalar.ps1 -Version 0.2.0
 #   .\script\moca\instalar.ps1 -Compilar    # compila local lo que haya en el checkout
+#   .\script\moca\instalar.ps1 -Compilar -Pull -Publicar   # robcod14: compila la última
+#                                                         # versión y la sube al Release
 #
-# Las versiones se sacan desde la Mac con script/moca/release; el workflow moca-release.yml
-# compila el instalador de Windows y lo adjunta al Release del tag.
+# Las versiones se sacan desde la Mac con script/moca/release. El instalador de Windows se
+# compila en robcod14 con -Compilar -Pull -Publicar y las demás máquinas (Surface) lo bajan
+# del Release con el uso sin parámetros. El workflow moca-release.yml queda de respaldo
+# (se corre a mano desde GitHub Actions).
 #
 # -Compilar requiere Visual Studio Build Tools (C++), rustup, protoc, Inno Setup 6 y cargo-about.
+# -Publicar requiere además gh con sesión iniciada (gh auth login).
 
 Param(
     # Versión a instalar (X.Y.Z). Por defecto, la del último Release.
@@ -20,7 +25,9 @@ Param(
     # Compila local con script/windows/bundle.ps1 en vez de descargar.
     [Switch]$Compilar,
     # Con -Compilar: hace git pull de la rama moca antes de compilar.
-    [Switch]$Pull
+    [Switch]$Pull,
+    # Con -Compilar: sube el instalador al GitHub Release vX.Y.Z (lo crea si no existe).
+    [Switch]$Publicar
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,7 +95,8 @@ $env:Path = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6"
 ) -join ';'
 
-foreach ($tool in 'cargo', 'protoc', 'ISCC', 'cargo-about') {
+$Tools = @('cargo', 'protoc', 'ISCC', 'cargo-about') + $(if ($Publicar) { @('gh') } else { @() })
+foreach ($tool in $Tools) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         throw "Falta $tool. Revisa los requisitos al inicio de este script."
     }
@@ -108,4 +116,21 @@ Write-Output "==> Compilando Moca Warp v$LocalVersion ($(git rev-parse --short H
 & "$RepoRoot\script\windows\bundle.ps1" -CHANNEL oss
 if (-not $?) { throw 'La compilación falló.' }
 
-Install-MocaWarp "$RepoRoot\script\windows\Output\MocaWarpSetup.exe"
+$Built = "$RepoRoot\script\windows\Output\MocaWarpSetup.exe"
+
+if ($Publicar) {
+    $Tag = "v$LocalVersion"
+    $Asset = Join-Path $env:TEMP "MocaWarp-$LocalVersion-Windows-x64-Setup.exe"
+    Copy-Item $Built $Asset -Force
+    Write-Output "==> Subiendo $(Split-Path $Asset -Leaf) al Release $Tag"
+    gh release view $Tag --repo $Repo *> $null
+    if (-not $?) {
+        gh release create $Tag --repo $Repo --title "Moca Warp $Tag" --notes "Moca Warp $Tag"
+        if (-not $?) { throw "No pude crear el Release $Tag." }
+    }
+    gh release upload $Tag $Asset --repo $Repo --clobber
+    if (-not $?) { throw "No pude subir el instalador al Release $Tag." }
+    Remove-Item $Asset -Force
+}
+
+Install-MocaWarp $Built
