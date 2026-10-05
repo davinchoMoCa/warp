@@ -65,8 +65,16 @@ if [ "$PUBLICAR" = true ]; then
     ZIP="target/release/Moca-Warp-$VERSION.zip"
     echo "==> GitHub Release v$VERSION"
     ditto -c -k --keepParent "$APP" "$ZIP"
-    gh release create "v$VERSION" "$ZIP" --repo davinchoMoCa/warp \
-        --title "Moca Warp v$VERSION" --notes "Moca Warp v$VERSION"
+    # El workflow moca-release.yml también publica en este Release (instalador de Windows).
+    if gh release view "v$VERSION" --repo davinchoMoCa/warp >/dev/null 2>&1; then
+        gh release upload "v$VERSION" "$ZIP" --repo davinchoMoCa/warp --clobber
+    else
+        gh release create "v$VERSION" "$ZIP" --repo davinchoMoCa/warp \
+            --title "Moca Warp v$VERSION" --notes "Moca Warp v$VERSION"
+    fi
 fi
+
+echo "==> Windows: GitHub Actions compila el instalador y lo adjunta al Release v$VERSION"
+echo "    https://github.com/davinchoMoCa/warp/actions/workflows/moca-release.yml"
 
 echo "Listo: Moca Warp v$VERSION instalada en /Applications."

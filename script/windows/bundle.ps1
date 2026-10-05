@@ -157,7 +157,8 @@ if ("$CHANNEL" -eq 'local') {
 } elseif ("$CHANNEL" -eq 'oss') {
     $WARP_BIN = 'warp-oss'
     $BINARY_NAME = 'warp-oss.exe'
-    $APP_NAME = 'WarpOss'
+    # moca: nombre propio para el instalador, accesos directos y esquema de URL (sin espacios).
+    $APP_NAME = 'MocaWarp'
     # The OSS channel does not ship Sentry, so drop the crash_reporting feature
     # (which would otherwise pull in the Sentry SDK as a dependency).
     $FEATURES = 'release_bundle,gui'

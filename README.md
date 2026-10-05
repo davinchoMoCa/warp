@@ -39,6 +39,29 @@ brew install protobuf pkgconf cargo-binstall
 
 La app queda en `target/debug/bundle/osx/Moca Warp.app`. No hace falta el `./script/bootstrap` completo de Warp (instala Docker, gcloud, etc.).
 
+## Instalar en Windows
+
+```powershell
+git clone -b moca https://github.com/davinchoMoCa/warp.git
+cd warp
+.\script\moca\instalar.ps1            # baja e instala el último Release
+.\script\moca\instalar.ps1 -Version 0.2.0
+```
+
+Queda en `%LOCALAPPDATA%\Programs\MocaWarp`, con acceso directo **MocaWarp** en el menú Inicio y desinstalador en Programas instalados. El instalador no está firmado: la primera vez Windows SmartScreen puede pedir confirmación.
+
+Para compilar local en vez de descargar (`-Compilar`, o `-Compilar -Pull` para traer antes la rama `moca`) hacen falta Visual Studio Build Tools con C++, rustup, protoc, Inno Setup 6 y `cargo install cargo-about --locked --features cli`. La primera compilación tarda unos 45 minutos con 16 núcleos.
+
+## Plataformas
+
+| Plataforma | Rol | Cómo llega una versión |
+|---|---|---|
+| macOS | Principal: ahí se desarrolla y se sacan las versiones | `./script/moca/release X.Y.Z --publicar` |
+| Windows | Secundaria | El workflow `moca-release.yml` compila el instalador al subir el tag y lo adjunta al Release; se instala con `instalar.ps1` |
+| Linux | Pendiente | — |
+
+Los cambios específicos de una plataforma van detrás de `#[cfg(target_os = "...")]`; los de Moca (offline, sin cuentas, onboarding) aplican a todas. El workflow también se puede lanzar a mano (Actions → Moca Warp release → Run workflow) para comprobar que un cambio no rompe Windows; deja el instalador como artifact del run sin tocar ningún Release.
+
 ## Versiones y firma
 
 La app se firma con el certificado **Apple Development: Jose David Moreira** (equipo `DSXB7C9XQA`), fijado en `script/macos/run`; se puede cambiar con `MOCA_SIGNING_CERT`. El equipo también define la carpeta compartida de datos (`DSXB7C9XQA.gt.moca.warp`, en `crates/warp_core/src/macos.rs` y `paths.rs`).
