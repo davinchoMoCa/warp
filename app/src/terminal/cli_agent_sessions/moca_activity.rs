@@ -126,7 +126,7 @@ pub fn format_activity(tool: &str, detail: Option<&str>) -> String {
 }
 
 /// Quita los `cd <dir> &&` del inicio: Claude los antepone a casi todos sus comandos.
-fn strip_cd_prefix(mut command: &str) -> &str {
+pub(crate) fn strip_cd_prefix(mut command: &str) -> &str {
     while command.starts_with("cd ")
         && let Some((_, rest)) = command.split_once("&&")
     {

@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::terminal::cli_agent_sessions::moca_activity::strip_cd_prefix;
+
 /// Máximo de filas en la tarjeta; el resto se resume como "+N más".
 pub const MAX_ROWS: usize = 8;
 
@@ -45,7 +47,9 @@ pub struct ProcessTree {
 }
 
 /// Arma el árbol de descendientes de `shell_pid` (sin incluir el shell), en orden
-/// de recorrido en profundidad; los hermanos van del más antiguo al más nuevo.
+/// de recorrido en profundidad. Los hermanos van del más nuevo al más antiguo, porque
+/// lo recién lanzado es lo que el agente está haciendo ahora; los procesos de fondo
+/// (ver [`is_background`]) se omiten con todo su subárbol.
 pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
     let mut children: HashMap<u32, Vec<&RawProcess>> = HashMap::new();
     for process in processes {
@@ -54,7 +58,7 @@ pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
         }
     }
     for siblings in children.values_mut() {
-        siblings.sort_by(|a, b| b.run_time.cmp(&a.run_time).then(a.pid.cmp(&b.pid)));
+        siblings.sort_by(|a, b| a.run_time.cmp(&b.run_time).then(b.pid.cmp(&a.pid)));
     }
 
     let mut all_rows = Vec::new();
@@ -66,7 +70,7 @@ pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
             continue;
         }
         if let Some(kids) = children.get(&pid) {
-            for kid in kids.iter().rev() {
+            for kid in kids.iter().rev().filter(|kid| !is_background(kid)) {
                 stack.push((kid.pid, depth + 1));
             }
         }
@@ -91,15 +95,52 @@ pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
     }
 }
 
-/// `["/opt/homebrew/bin/opencode", "run", "--pure"]` → `opencode run --pure`.
-pub fn format_command(process: &RawProcess) -> String {
-    let mut parts = process.cmd.iter();
-    let program = parts
-        .next()
+/// Procesos que viven toda la sesión sin ser "trabajo": servidores MCP y `caffeinate`.
+pub fn is_background(process: &RawProcess) -> bool {
+    let program = program_name(process);
+    program == "caffeinate"
+        || program.contains("mcp")
+        || process
+            .cmd
+            .iter()
+            .skip(1)
+            .any(|arg| arg == "--mcp" || arg == "mcp")
+}
+
+fn program_name(process: &RawProcess) -> String {
+    process
+        .cmd
+        .first()
         .map(|argv0| argv0.rsplit(['/', '\\']).next().unwrap_or(argv0).to_owned())
         .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| process.name.clone());
-    let mut text = program;
+        .unwrap_or_else(|| process.name.clone())
+}
+
+/// Claude corre cada comando como `zsh -c "source <snapshot> && … && eval '<cmd>' …"`;
+/// devuelve `<cmd>` sin los `cd dir &&` del inicio.
+fn agent_shell_command(process: &RawProcess) -> Option<String> {
+    if !matches!(program_name(process).as_str(), "zsh" | "bash" | "sh") {
+        return None;
+    }
+    let script = process
+        .cmd
+        .iter()
+        .position(|arg| arg == "-c")
+        .and_then(|i| process.cmd.get(i + 1))?;
+    let start = script.find("eval '")? + "eval '".len();
+    let rest = &script[start..];
+    let end = rest.find("' < /dev/null").or_else(|| rest.rfind('\''))?;
+    let command = strip_cd_prefix(rest[..end].trim());
+    (!command.is_empty()).then(|| command.to_owned())
+}
+
+/// `["/opt/homebrew/bin/opencode", "run", "--pure"]` → `opencode run --pure`.
+pub fn format_command(process: &RawProcess) -> String {
+    if let Some(command) = agent_shell_command(process) {
+        return truncate(&format!("$ {command}"));
+    }
+    let mut parts = process.cmd.iter().skip(1);
+    let mut text = program_name(process);
     for arg in parts {
         if text.chars().count() >= MAX_COMMAND_CHARS {
             break;
@@ -107,12 +148,16 @@ pub fn format_command(process: &RawProcess) -> String {
         text.push(' ');
         text.push_str(arg);
     }
+    truncate(&text)
+}
+
+fn truncate(text: &str) -> String {
     if text.chars().count() > MAX_COMMAND_CHARS {
         let mut cut: String = text.chars().take(MAX_COMMAND_CHARS - 1).collect();
         cut.push('…');
         cut
     } else {
-        text
+        text.to_owned()
     }
 }
 

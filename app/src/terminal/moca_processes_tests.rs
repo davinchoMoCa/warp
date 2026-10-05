@@ -84,11 +84,12 @@ fn test_build_tree_complex() {
     assert_eq!(tree.rows[0].depth, 0);
     assert_eq!(tree.rows[0].command, "claude");
 
+    // Los hermanos van del más nuevo al más antiguo.
     assert_eq!(tree.rows[1].depth, 1);
-    assert_eq!(tree.rows[1].command, "opencode");
+    assert_eq!(tree.rows[1].command, "bash");
 
     assert_eq!(tree.rows[2].depth, 1);
-    assert_eq!(tree.rows[2].command, "bash");
+    assert_eq!(tree.rows[2].command, "opencode");
 }
 
 #[test]
@@ -109,8 +110,8 @@ fn test_build_tree_max_rows() {
 
     assert_eq!(tree.rows.len(), MAX_ROWS);
     assert_eq!(tree.hidden, 2);
-    // First row should be the one with 10s
-    assert_eq!(tree.rows[0].command, "10");
+    // La primera fila es la más nueva (1 s).
+    assert_eq!(tree.rows[0].command, "1");
 }
 
 #[test]
@@ -121,4 +122,30 @@ fn test_build_tree_cycle() {
     assert_eq!(tree.rows.len(), 1);
     assert_eq!(tree.rows[0].command, "a");
     assert_eq!(tree.hidden, 0);
+}
+
+#[test]
+fn test_build_tree_hides_background_processes() {
+    let procs = vec![
+        p(200, 100, &["claude"], 300),
+        p(210, 200, &["tabularis", "--mcp"], 300),
+        p(211, 210, &["postgresql-plugin"], 300),
+        p(220, 200, &["caffeinate", "-i", "-t", "300"], 60),
+        p(230, 200, &["opencode", "run"], 5),
+    ];
+    let tree = build_tree(&procs, 100);
+    let commands: Vec<&str> = tree.rows.iter().map(|row| row.command.as_str()).collect();
+    assert_eq!(commands, vec!["claude", "opencode run"]);
+    assert_eq!(tree.hidden, 0);
+}
+
+#[test]
+fn test_format_command_extracts_agent_shell_command() {
+    let script = "source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true \
+        && eval 'cd /tmp/moca-qa-demo && ./progreso.sh' < /dev/null && pwd -P >| /tmp/cwd";
+    let process = p(300, 200, &["/bin/zsh", "-c", script], 3);
+    assert_eq!(format_command(&process), "$ ./progreso.sh");
+
+    let plain = p(301, 200, &["/bin/zsh", "-c", "echo hola"], 3);
+    assert_eq!(format_command(&plain), "zsh -c echo hola");
 }
