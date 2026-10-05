@@ -22,12 +22,20 @@ pub(super) fn parse(body: &str) -> Option<CLIAgentEvent> {
         "permission_replied" => CLIAgentEventType::PermissionReplied,
         "question_asked" => CLIAgentEventType::QuestionAsked,
         "idle_prompt" => CLIAgentEventType::IdlePrompt,
+        // moca: eventos del plugin moca-warp.
+        "tool_start" => CLIAgentEventType::ToolStart,
+        "tasks_progress" => CLIAgentEventType::TasksProgress,
         other => CLIAgentEventType::Unknown(other.to_string()),
     };
 
     let tool_input_preview = raw.tool_input.as_ref().and_then(|val| {
         val.get("command")
             .or_else(|| val.get("file_path"))
+            // moca: más contexto para la actividad (Grep/Glob/Agent/Skill/WebFetch).
+            .or_else(|| val.get("description"))
+            .or_else(|| val.get("pattern"))
+            .or_else(|| val.get("skill"))
+            .or_else(|| val.get("url"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     });
@@ -54,6 +62,7 @@ pub(super) fn parse(body: &str) -> Option<CLIAgentEvent> {
             tool_input_preview,
             plugin_version: raw.plugin_version,
             error_type: raw.error_type,
+            tasks: raw.tasks_done.zip(raw.tasks_total),
         },
         source: CLIAgentEventSource::RichPlugin,
     })

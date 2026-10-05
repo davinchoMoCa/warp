@@ -31,6 +31,9 @@ pub struct CLIAgentNotification {
     pub tool_input: Option<serde_json::Value>,
     pub plugin_version: Option<String>,
     pub error_type: Option<String>,
+    /// moca: avance de la lista de tareas del agente (plugin moca-warp).
+    pub tasks_done: Option<u32>,
+    pub tasks_total: Option<u32>,
 }
 
 impl CLIAgentNotification {
@@ -50,6 +53,8 @@ impl CLIAgentNotification {
             tool_input: None,
             plugin_version: None,
             error_type: None,
+            tasks_done: None,
+            tasks_total: None,
         }
     }
 }

@@ -21,6 +21,10 @@ pub enum CLIAgentEventType {
     PermissionReplied,
     QuestionAsked,
     IdlePrompt,
+    /// moca: el agente empezó a usar una herramienta (plugin moca-warp).
+    ToolStart,
+    /// moca: cambió el avance de la lista de tareas (plugin moca-warp).
+    TasksProgress,
     Unknown(String),
 }
 
@@ -47,6 +51,8 @@ pub struct CLIAgentEventPayload {
     /// On Claude Code, this comes from the `StopFailure` hook (e.g. `"rate_limit"`).
     /// Not implemented for Codex.
     pub error_type: Option<String>,
+    /// moca: avance de la lista de tareas, `(hechas, total)`.
+    pub tasks: Option<(u32, u32)>,
 }
 
 /// A parsed event from a CLI agent plugin.

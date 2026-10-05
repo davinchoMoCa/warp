@@ -1,5 +1,6 @@
 pub mod event;
 pub mod listener;
+pub mod moca_activity;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_manager;
 
@@ -264,6 +265,8 @@ impl CLIAgentSession {
                 self.plugin_version = event.payload.plugin_version.clone();
                 return None;
             }
+            // moca: solo actualizan la actividad (ver `moca_activity`), no el estado.
+            CLIAgentEventType::ToolStart | CLIAgentEventType::TasksProgress => return None,
             CLIAgentEventType::Unknown(_) => return None,
         };
 
@@ -362,6 +365,10 @@ pub struct CLIAgentSessionsModel {
     /// Source of `CtrlCCancelState::armed_token` values. Monotonically increasing;
     /// never reused, so a stale callback can never alias a newer window.
     next_ctrl_c_token: u64,
+    /// moca: qué está haciendo cada agente (ver `moca_activity`).
+    moca_activity: HashMap<EntityId, moca_activity::MocaActivity>,
+    /// moca: hay un repintado periódico programado.
+    moca_refresh_armed: bool,
 }
 
 impl Entity for CLIAgentSessionsModel {
@@ -377,7 +384,58 @@ impl CLIAgentSessionsModel {
             plugin_auto_failures: HashSet::new(),
             ctrl_c_cancel_state: HashMap::new(),
             next_ctrl_c_token: 0,
+            moca_activity: HashMap::new(),
+            moca_refresh_armed: false,
         }
+    }
+
+    /// moca: línea de actividad para la pestaña (`3/7 · Bash: npm test · hace 12 s`).
+    pub fn moca_activity_line(
+        &self,
+        terminal_view_id: EntityId,
+    ) -> Option<moca_activity::MocaActivityLine> {
+        let session = self.sessions.get(&terminal_view_id)?;
+        self.moca_activity
+            .get(&terminal_view_id)?
+            .line(&session.status, instant::Instant::now())
+    }
+
+    /// moca: mientras algún agente esté en progreso, repinta cada `REFRESH_EVERY`
+    /// para que el "hace X" y el aviso de "¿trabado?" se mantengan al día.
+    fn moca_arm_refresh(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.moca_refresh_armed {
+            return;
+        }
+        self.moca_refresh_armed = true;
+        ctx.spawn(
+            async move { warpui::r#async::Timer::after(moca_activity::REFRESH_EVERY).await },
+            |model, _, ctx| {
+                model.moca_refresh_armed = false;
+                let active: Vec<(EntityId, CLIAgent)> = model
+                    .sessions
+                    .iter()
+                    .filter(|(id, session)| {
+                        model.moca_activity.contains_key(id)
+                            && matches!(
+                                session.status,
+                                CLIAgentSessionStatus::InProgress
+                                    | CLIAgentSessionStatus::Blocked { .. }
+                            )
+                    })
+                    .map(|(id, session)| (*id, session.agent))
+                    .collect();
+                if active.is_empty() {
+                    return;
+                }
+                for (terminal_view_id, agent) in active {
+                    ctx.emit(CLIAgentSessionsModelEvent::SessionUpdated {
+                        terminal_view_id,
+                        agent,
+                    });
+                }
+                model.moca_arm_refresh(ctx);
+            },
+        );
     }
 
     pub fn session(&self, terminal_view_id: EntityId) -> Option<&CLIAgentSession> {
@@ -460,6 +518,7 @@ impl CLIAgentSessionsModel {
     pub fn remove_session(&mut self, terminal_view_id: EntityId, ctx: &mut ModelContext<Self>) {
         self.abort_pending_cancel(terminal_view_id);
         self.ctrl_c_cancel_state.remove(&terminal_view_id);
+        self.moca_activity.remove(&terminal_view_id);
         if let Some(session) = self.sessions.remove(&terminal_view_id) {
             ctx.emit(CLIAgentSessionsModelEvent::Ended {
                 terminal_view_id,
@@ -510,6 +569,15 @@ impl CLIAgentSessionsModel {
         if event.source == CLIAgentEventSource::RichPlugin {
             session.received_rich_notification = true;
         }
+        // moca: registrar actividad para la pestaña.
+        self.moca_activity
+            .entry(terminal_view_id)
+            .or_default()
+            .record(event, instant::Instant::now());
+        let session = self
+            .sessions
+            .get_mut(&terminal_view_id)
+            .expect("session presence checked above");
 
         let event_type = &event.event;
         if let Some(new_status) = session.apply_event(event) {
@@ -528,12 +596,15 @@ impl CLIAgentSessionsModel {
             CLIAgentEventType::SessionStart
                 | CLIAgentEventType::PromptSubmit
                 | CLIAgentEventType::ToolComplete
+                | CLIAgentEventType::ToolStart
+                | CLIAgentEventType::TasksProgress
         ) {
             ctx.emit(CLIAgentSessionsModelEvent::SessionUpdated {
                 terminal_view_id,
                 agent: session.agent,
             });
         }
+        self.moca_arm_refresh(ctx);
     }
 
     /// Observes a Ctrl-C byte (`0x03`) written to this session's PTY.

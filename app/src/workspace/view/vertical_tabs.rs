@@ -4541,6 +4541,28 @@ fn cloud_agent_working_directory_and_env(
     }
 }
 
+// moca: actividad del agente CLI
+fn render_moca_activity_line(
+    terminal_view: &TerminalView,
+    font_size: f32,
+    appearance: &Appearance,
+    app: &AppContext,
+) -> Option<Box<dyn Element>> {
+    let line = CLIAgentSessionsModel::as_ref(app).moca_activity_line(terminal_view.id())?;
+    let theme = appearance.theme();
+    let color: WarpThemeFill = if line.stale {
+        theme.ui_warning_color().into()
+    } else {
+        theme.sub_text_color(theme.background())
+    };
+    Some(
+        Text::new_inline(line.text, appearance.ui_font_family(), font_size)
+            .with_clip(ClipConfig::ellipsis())
+            .with_color(color.into())
+            .finish(),
+    )
+}
+
 fn render_terminal_row_content(
     props: &PaneProps<'_>,
     terminal_view: &TerminalView,
@@ -4660,6 +4682,10 @@ fn render_terminal_row_content(
         .with_cross_axis_alignment(CrossAxisAlignment::Start);
     content.add_child(first_line_element);
     content.add_child(Container::new(second_line).with_margin_top(2.).finish());
+    // moca: actividad del agente CLI
+    if let Some(el) = render_moca_activity_line(terminal_view, 10., appearance, app) {
+        content.add_child(Container::new(el).with_margin_top(2.).finish());
+    }
     content.add_child(
         Container::new(render_terminal_metadata_line(
             terminal_view,
@@ -7485,6 +7511,10 @@ fn render_compact_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn El
                     )
                 }
             };
+
+            // moca: actividad del agente CLI
+            let subtitle =
+                render_moca_activity_line(terminal_view, 10., appearance, app).or(subtitle);
 
             (title, subtitle)
         } else {
