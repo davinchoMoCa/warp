@@ -78,9 +78,17 @@ pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
             continue;
         }
         if let Some(process) = processes.iter().find(|p| p.pid == pid) {
+            // Un comando de Claude que lanza otro agente (p. ej. delegar → opencode) es
+            // ilegible como comando; lo que importa es que ahí trabaja un subagente.
+            let command =
+                if agent_shell_command(process).is_some() && subtree_has_agent(&children, pid) {
+                    "subagente".to_owned()
+                } else {
+                    format_command(process)
+                };
             all_rows.push(ProcessRow {
                 depth: depth - 1,
-                command: format_command(process),
+                command,
                 run_time: process.run_time,
                 cpu_percent: process.cpu_percent,
             });
@@ -95,10 +103,35 @@ pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
     }
 }
 
-/// Procesos que viven toda la sesión sin ser "trabajo": servidores MCP y `caffeinate`.
+/// Agentes de código que pueden correr como subproceso de otro agente.
+const AGENT_PROGRAMS: &[&str] = &["opencode", "claude", "codex", "gemini", "aider", "goose"];
+
+/// Intérpretes cuyo primer argumento suele ser la ruta de un script.
+const INTERPRETERS: &[&str] = &["zsh", "bash", "sh", "python", "python3", "node", "ruby"];
+
+fn subtree_has_agent(children: &HashMap<u32, Vec<&RawProcess>>, pid: u32) -> bool {
+    let mut pending = vec![pid];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(current) = pending.pop() {
+        if !seen.insert(current) {
+            continue;
+        }
+        for kid in children.get(&current).into_iter().flatten() {
+            if AGENT_PROGRAMS.contains(&program_name(kid).as_str()) {
+                return true;
+            }
+            pending.push(kid.pid);
+        }
+    }
+    false
+}
+
+/// Procesos que no son "trabajo" del agente: servidores MCP, `caffeinate` y esperas
+/// (`sleep`) de los scripts.
 pub fn is_background(process: &RawProcess) -> bool {
     let program = program_name(process);
     program == "caffeinate"
+        || program == "sleep"
         || program.contains("mcp")
         || process
             .cmd
@@ -130,8 +163,43 @@ fn agent_shell_command(process: &RawProcess) -> Option<String> {
     let start = script.find("eval '")? + "eval '".len();
     let rest = &script[start..];
     let end = rest.find("' < /dev/null").or_else(|| rest.rfind('\''))?;
-    let command = strip_cd_prefix(rest[..end].trim());
+    let command = strip_leading_assignments(strip_cd_prefix(rest[..end].trim()));
     (!command.is_empty()).then(|| command.to_owned())
+}
+
+/// `s=$(date +%s); ./progreso.sh` → `./progreso.sh`: las asignaciones no dicen qué se corre.
+fn strip_leading_assignments(command: &str) -> &str {
+    let mut rest = command;
+    while let Some((head, tail)) = rest.split_once(';') {
+        if !is_assignment(head.trim()) {
+            break;
+        }
+        rest = tail.trim_start();
+    }
+    rest
+}
+
+fn is_assignment(segment: &str) -> bool {
+    let Some((name, _)) = segment.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `-m ollama/glm-5.3:cloud` → `glm-5.3`.
+fn opencode_model(process: &RawProcess) -> Option<String> {
+    let model = process
+        .cmd
+        .iter()
+        .position(|arg| arg == "-m" || arg == "--model")
+        .and_then(|i| process.cmd.get(i + 1))?;
+    let name = model.rsplit('/').next().unwrap_or(model);
+    let name = name.split(':').next().unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// `["/opt/homebrew/bin/opencode", "run", "--pure"]` → `opencode run --pure`.
@@ -139,9 +207,25 @@ pub fn format_command(process: &RawProcess) -> String {
     if let Some(command) = agent_shell_command(process) {
         return truncate(&format!("$ {command}"));
     }
-    let mut parts = process.cmd.iter().skip(1);
-    let mut text = program_name(process);
-    for arg in parts {
+    let program = program_name(process);
+    if program == "opencode"
+        && let Some(model) = opencode_model(process)
+    {
+        return format!("opencode · {model}");
+    }
+    let mut args: Vec<String> = process.cmd.iter().skip(1).cloned().collect();
+    if INTERPRETERS.contains(&program.as_str())
+        && let Some(script) = args.first_mut()
+        && !script.starts_with('-')
+    {
+        *script = script
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(script)
+            .to_owned();
+    }
+    let mut text = program;
+    for arg in &args {
         if text.chars().count() >= MAX_COMMAND_CHARS {
             break;
         }
