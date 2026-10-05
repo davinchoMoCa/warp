@@ -14,6 +14,7 @@ El README original de Warp está en [README.upstream.md](README.upstream.md).
 | Ya no obliga a crear cuenta al arrancar (se quitó `account_first_onboarding` de las features por defecto) | `app/Cargo.toml` |
 | Se ocultan todas las invitaciones a cuenta: "Sign in", "Sign up", "Log in", "Create an account" y "Upgrade" | 15 sitios marcados con `// moca: sin cuentas` |
 | Constante `ACCOUNTS_DISABLED` que controla lo anterior | `crates/warp_core/src/moca.rs` |
+| La bienvenida se salta "How do you want to work?" y entra en modo "solo terminal", con barra y avisos de agentes CLI encendidos | `crates/onboarding/src/model.rs` |
 | Nombre de la app: **Moca Warp**; identificador `gt.moca.MocaWarp` (datos separados de Warp.app) | `app/Cargo.toml`, `app/src/bin/oss.rs`, `crates/warp_core/src/paths.rs`, `crates/warp_core/src/channel/state.rs`, `script/macos/run` |
 
 Ya venían apagados en la versión open source de Warp: telemetría, reporte de fallos y actualizaciones automáticas.
