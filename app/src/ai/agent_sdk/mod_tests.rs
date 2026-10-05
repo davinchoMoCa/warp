@@ -22,7 +22,8 @@ use warpui::{App, SingletonEntity, WindowId};
 use super::{
     AgentDriverRunner, CommandAuthentication, build_server_side_task, command_authentication,
     command_requires_auth, command_to_telemetry_event, reconcile_task_harness,
-    resolve_agent_driver_team_scope, validated_driver_repositories_for_preparation,
+    resolve_agent_driver_team_scope, validate_factory_task_model_override,
+    validated_driver_repositories_for_preparation,
 };
 use crate::ai::agent_sdk::driver::harness::HarnessKind;
 use crate::ai::agent_sdk::driver::{AgentDriverError, AgentDriverOptions, AgentRunPrompt, Task};
@@ -235,18 +236,6 @@ fn existing_task_factory_router_model_requires_matching_snapshot() {
         (None, false),
     ] {
         App::test((), |mut app| async move {
-            let _attachments = FeatureFlag::AmbientAgentsImageUpload.override_enabled(false);
-            let _handoff = FeatureFlag::OzHandoff.override_enabled(false);
-            let provider = ServerApiProvider::new_for_test();
-            let managed_secrets_client = provider.get_managed_secrets_client();
-            app.add_singleton_model(|_| provider);
-            let auth_provider = AuthStateProvider::new_for_test();
-            let auth_state = auth_provider.get().clone();
-            app.add_singleton_model(|_| auth_provider);
-            app.add_singleton_model(|_| {
-                AppManagedSecretManager::new(managed_secrets_client, auth_state)
-            });
-
             let args = parse_run_agent_args(&[
                 "agent",
                 "run",
@@ -255,7 +244,7 @@ fn existing_task_factory_router_model_requires_matching_snapshot() {
                 "--model",
                 FACTORY_ROUTER_ID,
             ]);
-            let (_, mut task) = app
+            let (_, task) = app
                 .update(|ctx| build_server_side_task(&args, &None, ctx))
                 .expect("existing task model should reach metadata validation");
             assert_eq!(
@@ -268,23 +257,14 @@ fn existing_task_factory_router_model_requires_matching_snapshot() {
                 model_id: Some(model_id.to_string()),
                 ..Default::default()
             });
-            let mut ai_client = MockAIClient::new();
-            ai_client
-                .expect_get_ambient_agent_task()
-                .times(1)
-                .return_once(move |_| Ok(metadata));
-            let ai_client: Arc<dyn AIClient> = Arc::new(ai_client);
-            let runner = app.add_singleton_model(|_| AgentDriverRunner);
-            let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
-            let mut options = agent_driver_options();
-            let result = AgentDriverRunner::fetch_secrets_and_attachments(
-                &foreground,
-                &ai_client,
-                TASK_ID.to_string(),
-                &mut options,
-                &mut task,
-            )
-            .await;
+            let result = validate_factory_task_model_override(
+                TASK_ID,
+                task.model.as_ref(),
+                metadata
+                    .agent_config_snapshot
+                    .as_ref()
+                    .and_then(|config| config.model_id.as_deref()),
+            );
             assert_eq!(result.is_ok(), expected_ok, "{result:?}");
         });
     }

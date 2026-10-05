@@ -601,6 +601,22 @@ fn build_server_side_task(
     Ok((config, task))
 }
 
+fn validate_factory_task_model_override(
+    task_id: &str,
+    model_id: Option<&LLMId>,
+    task_model_id: Option<&str>,
+) -> Result<(), AgentDriverError> {
+    if let Some(model_id) =
+        model_id.filter(|id| custom_model_routers::is_factory_custom_router_id(id.as_str()))
+        && task_model_id != Some(model_id.as_str())
+    {
+        return Err(AgentDriverError::TaskModelMismatch {
+            task_id: task_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn reconcile_task_harness(
     task_id: &str,
     selected_harness: &mut Harness,
@@ -1495,16 +1511,11 @@ impl AgentDriverRunner {
             Ok(None) => (None, None, None, None, None, Vec::new(), None, None),
             Err(err) => return Err(AgentDriverError::TaskMetadataFetchFailed(err)),
         };
-        if let Some(model_id) = task
-            .model
-            .as_ref()
-            .filter(|id| custom_model_routers::is_factory_custom_router_id(id.as_str()))
-            && task_model_id.as_deref() != Some(model_id.as_str())
-        {
-            return Err(AgentDriverError::TaskModelMismatch {
-                task_id: task_id_str,
-            });
-        }
+        validate_factory_task_model_override(
+            &task_id_str,
+            task.model.as_ref(),
+            task_model_id.as_deref(),
+        )?;
         match experimental.as_ref() {
             Some(values) => warp_core::safe_info!(
                 safe: ("factory_experimental_config state=read_uninterpreted key_count={}", values.len()),
