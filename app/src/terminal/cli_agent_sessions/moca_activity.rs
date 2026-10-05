@@ -74,25 +74,31 @@ impl MocaActivity {
         let elapsed = now.saturating_duration_since(last);
         let stale = matches!(status, CLIAgentSessionStatus::InProgress) && elapsed >= STALE_AFTER;
 
+        // El tiempo va antes que la actividad: la pestaña es angosta y el detalle
+        // (comando, archivo) es lo que se puede cortar con "…".
         let mut parts: Vec<String> = Vec::new();
         if stale {
             parts.push("¿trabado?".to_owned());
         }
+        let status_word = match status {
+            CLIAgentSessionStatus::InProgress => None,
+            CLIAgentSessionStatus::Blocked { .. } => Some("esperando respuesta"),
+            CLIAgentSessionStatus::Success => Some("listo"),
+            CLIAgentSessionStatus::Failed { .. } => Some("falló"),
+            CLIAgentSessionStatus::Cancelled => Some("cancelado"),
+        };
+        if let Some(word) = status_word {
+            parts.push(word.to_owned());
+        }
+        parts.push(format_ago(elapsed));
         if let Some((done, total)) = self.tasks.filter(|(_, total)| *total > 0) {
             parts.push(format!("{done}/{total}"));
         }
-        match status {
-            CLIAgentSessionStatus::InProgress => {
-                if let Some(current) = &self.current {
-                    parts.push(current.clone());
-                }
-            }
-            CLIAgentSessionStatus::Blocked { .. } => parts.push("esperando respuesta".to_owned()),
-            CLIAgentSessionStatus::Success => parts.push("listo".to_owned()),
-            CLIAgentSessionStatus::Failed { .. } => parts.push("falló".to_owned()),
-            CLIAgentSessionStatus::Cancelled => parts.push("cancelado".to_owned()),
+        if status_word.is_none()
+            && let Some(current) = &self.current
+        {
+            parts.push(current.clone());
         }
-        parts.push(format_ago(elapsed));
 
         Some(MocaActivityLine {
             text: parts.join(" · "),
@@ -106,7 +112,7 @@ pub fn format_activity(tool: &str, detail: Option<&str>) -> String {
     let Some(detail) = detail.map(str::trim).filter(|d| !d.is_empty()) else {
         return tool.to_owned();
     };
-    let first_line = detail.lines().next().unwrap_or(detail);
+    let first_line = strip_cd_prefix(detail.lines().next().unwrap_or(detail));
     let detail = if first_line.starts_with('/') || first_line.contains(":\\") {
         first_line
             .rsplit(['/', '\\'])
@@ -117,6 +123,16 @@ pub fn format_activity(tool: &str, detail: Option<&str>) -> String {
         first_line
     };
     format!("{tool}: {}", truncate(detail, MAX_DETAIL_CHARS))
+}
+
+/// Quita los `cd <dir> &&` del inicio: Claude los antepone a casi todos sus comandos.
+fn strip_cd_prefix(mut command: &str) -> &str {
+    while command.starts_with("cd ")
+        && let Some((_, rest)) = command.split_once("&&")
+    {
+        command = rest.trim_start();
+    }
+    command
 }
 
 /// `12 s` → `hace 12 s`, `3 min`, `2 h`.

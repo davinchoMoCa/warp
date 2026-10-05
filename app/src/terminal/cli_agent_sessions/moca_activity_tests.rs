@@ -92,7 +92,7 @@ fn test_line_tool_start() {
             t0 + Duration::from_secs(12),
         )
         .unwrap();
-    assert_eq!(line.text, "Bash: cargo test · hace 12 s");
+    assert_eq!(line.text, "hace 12 s · Bash: cargo test");
     assert!(!line.stale);
 }
 
@@ -174,7 +174,7 @@ fn test_line_tasks_progress() {
             t + Duration::from_secs(1),
         )
         .unwrap();
-    assert_eq!(line.text, "3/7 · Bash: ls · hace 1 s");
+    assert_eq!(line.text, "hace 1 s · 3/7 · Bash: ls");
 }
 
 #[test]
@@ -197,4 +197,17 @@ fn test_line_stop_success() {
 
     let line = activity.line(&CLIAgentSessionStatus::Success, t).unwrap();
     assert_eq!(line.text, "listo · hace 0 s");
+}
+
+#[test]
+fn test_format_activity_strips_cd_prefix() {
+    assert_eq!(
+        format_activity("Bash", Some("cd /tmp/moca-qa-demo && ./progreso.sh")),
+        "Bash: ./progreso.sh"
+    );
+    assert_eq!(
+        format_activity("Bash", Some("cd /a && cd b && npm test")),
+        "Bash: npm test"
+    );
+    assert_eq!(format_activity("Bash", Some("cd /tmp")), "Bash: cd /tmp");
 }
