@@ -37,12 +37,20 @@ function Install-MocaWarp([String]$Installer) {
     Start-Sleep -Seconds 2
 
     Write-Output '==> Instalando'
-    $Proc = Start-Process $Installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/MERGETASKS=!desktopicon' -Wait -PassThru
+    # WaitForExit en vez de Start-Process -Wait: -Wait también espera a los hijos, y el
+    # instalador a veces deja abierta la app (entrada postinstall de windows-installer.iss).
+    $Proc = Start-Process $Installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/MERGETASKS=!desktopicon' -PassThru
+    $Proc.WaitForExit()
     if ($Proc.ExitCode -ne 0) { throw "El instalador terminó con código $($Proc.ExitCode)." }
 
     $Installed = Get-ItemProperty $UninstallKey -ErrorAction SilentlyContinue
     Write-Output "Listo: Moca Warp $($Installed.DisplayVersion) instalada en $($Installed.InstallLocation)"
-    Start-Process (Join-Path $Installed.InstallLocation 'warp-oss.exe')
+
+    $Exe = Join-Path $Installed.InstallLocation 'warp-oss.exe'
+    Start-Sleep -Seconds 5
+    if (-not (Get-Process warp-oss -ErrorAction SilentlyContinue | Where-Object Path -eq $Exe)) {
+        Start-Process $Exe
+    }
 }
 
 $Current = (Get-ItemProperty $UninstallKey -ErrorAction SilentlyContinue).DisplayVersion
