@@ -40,9 +40,9 @@ function Install-MocaWarp([String]$Installer) {
     $Proc = Start-Process $Installer -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/MERGETASKS=!desktopicon' -Wait -PassThru
     if ($Proc.ExitCode -ne 0) { throw "El instalador terminó con código $($Proc.ExitCode)." }
 
-    # El instalador abre la app al terminar (entrada postinstall de windows-installer.iss).
     $Installed = Get-ItemProperty $UninstallKey -ErrorAction SilentlyContinue
     Write-Output "Listo: Moca Warp $($Installed.DisplayVersion) instalada en $($Installed.InstallLocation)"
+    Start-Process (Join-Path $Installed.InstallLocation 'warp-oss.exe')
 }
 
 $Current = (Get-ItemProperty $UninstallKey -ErrorAction SilentlyContinue).DisplayVersion
