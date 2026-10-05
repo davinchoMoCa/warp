@@ -263,6 +263,7 @@ fn account_first_path_uses_three_step_progress() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn account_first_path_uses_agent_ui_defaults() {
     let _account_first = FeatureFlag::AccountFirstOnboarding.override_enabled(true);
     App::test((), |mut app| async move {
@@ -291,6 +292,7 @@ fn account_first_path_uses_agent_ui_defaults() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn agent_path_routes_through_ai_setup() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -326,6 +328,7 @@ fn agent_path_routes_through_ai_setup() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn third_party_choice_routes_to_third_party_slide() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -350,6 +353,7 @@ fn third_party_choice_routes_to_third_party_slide() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn confirm_no_ai_switches_to_terminal_path() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -385,6 +389,7 @@ fn confirm_no_ai_switches_to_terminal_path() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn confirm_no_ai_from_intention_then_back_returns_to_intention() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -432,6 +437,7 @@ fn cancel_no_ai_from_intention_routes_to_ai_setup() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn dismiss_no_ai_closes_without_changing_path() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -467,6 +473,7 @@ fn terminal_settings_disable_ai() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn agent_intent_keeps_ai_enabled_for_any_setup_choice() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -490,6 +497,7 @@ fn agent_intent_keeps_ai_enabled_for_any_setup_choice() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn terminal_path_skips_third_party() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -515,6 +523,7 @@ fn terminal_path_skips_third_party() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn progress_reports_v3_positions_for_agent_path() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);
@@ -537,6 +546,7 @@ fn progress_reports_v3_positions_for_agent_path() {
 }
 
 #[test]
+#[ignore = "moca: sin cuentas, Moca Warp no usa el camino de agentes de Warp"]
 fn progress_reports_v3_positions_for_third_party_path() {
     App::test((), |mut app| async move {
         let model = add_test_model(&mut app);

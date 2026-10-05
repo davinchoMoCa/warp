@@ -205,11 +205,24 @@ impl OnboardingStateModel {
         workspace_enforces_autonomy: bool,
         auth_state: OnboardingAuthState,
     ) -> Self {
+        // moca: sin cuentas — sin IA de Warp, el onboarding siempre es "solo terminal",
+        // con la barra y los avisos de agentes CLI encendidos.
+        let (intention, ui_customization) = if warp_core::moca::ACCOUNTS_DISABLED {
+            (
+                OnboardingIntention::Terminal,
+                UICustomizationSettings::terminal_defaults(),
+            )
+        } else {
+            (
+                OnboardingIntention::AgentDrivenDevelopment,
+                UICustomizationSettings::agent_defaults(),
+            )
+        };
         Self {
             step: OnboardingStep::Intro,
-            intention: OnboardingIntention::AgentDrivenDevelopment,
+            intention,
             agent_settings: AgentDevelopmentSettings::default(),
-            ui_customization: UICustomizationSettings::agent_defaults(),
+            ui_customization,
             models,
             default_model_id,
             workspace_enforces_autonomy,
@@ -834,6 +847,10 @@ impl OnboardingStateModel {
                 OnboardingStep::Intro => None,
                 OnboardingStep::Intention => Some(OnboardingStep::Intro),
                 OnboardingStep::AiSetup => Some(OnboardingStep::Intention),
+                // moca: sin cuentas
+                OnboardingStep::Customize if warp_core::moca::ACCOUNTS_DISABLED => {
+                    Some(OnboardingStep::Intro)
+                }
                 OnboardingStep::Customize => {
                     if agent_intention {
                         match self.ai_setup_choice {
@@ -892,6 +909,10 @@ impl OnboardingStateModel {
             }
         } else {
             match self.step {
+                // moca: sin cuentas — se salta la pantalla "How do you want to work?".
+                OnboardingStep::Intro if warp_core::moca::ACCOUNTS_DISABLED => {
+                    self.set_step(OnboardingStep::Customize, ctx)
+                }
                 OnboardingStep::Intro => self.set_step(OnboardingStep::Intention, ctx),
                 OnboardingStep::Intention => match self.intention {
                     OnboardingIntention::Terminal => self.set_step(OnboardingStep::Customize, ctx),
