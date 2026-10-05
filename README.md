@@ -39,6 +39,19 @@ brew install protobuf pkgconf cargo-binstall
 
 La app queda en `target/debug/bundle/osx/Moca Warp.app`. No hace falta el `./script/bootstrap` completo de Warp (instala Docker, gcloud, etc.).
 
+## Versiones y firma
+
+La app se firma con el certificado **Apple Development: Jose David Moreira** (equipo `DSXB7C9XQA`), fijado en `script/macos/run`; se puede cambiar con `MOCA_SIGNING_CERT`. El equipo también define la carpeta compartida de datos (`DSXB7C9XQA.gt.moca.warp`, en `crates/warp_core/src/macos.rs` y `paths.rs`).
+
+Para sacar una versión nueva:
+
+```bash
+./script/moca/release 0.2.0             # compila release, firma, instala en /Applications, commit + tag v0.2.0
+./script/moca/release 0.2.0 --publicar  # además crea un GitHub Release con el .zip
+```
+
+La versión se guarda en `app/Cargo.toml` y se ve en Finder > Obtener información.
+
 ## Ramas
 
 - `moca`: nuestra versión (rama por defecto).

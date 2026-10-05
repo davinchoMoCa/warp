@@ -1,0 +1,72 @@
+#!/bin/bash
+#
+# Saca una versión nueva de Moca Warp y la instala en /Applications.
+#
+# Uso: ./script/moca/release 0.2.0 [--publicar]
+#
+#   1. Pone la versión en app/Cargo.toml.
+#   2. Compila en modo release y firma con el certificado de Moca (script/macos/run).
+#   3. Reemplaza /Applications/Moca Warp.app.
+#   4. Hace commit "Moca Warp vX.Y.Z", crea el tag vX.Y.Z y los sube a GitHub.
+#   5. Con --publicar, además crea un GitHub Release con el .zip de la app.
+
+set -euo pipefail
+
+VERSION="${1:-}"
+PUBLICAR=false
+[ "${2:-}" = "--publicar" ] && PUBLICAR=true
+
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Uso: $0 X.Y.Z [--publicar]" >&2
+    exit 1
+fi
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)"
+cd "$REPO_ROOT"
+
+if [ "$(git branch --show-current)" != "moca" ]; then
+    echo "Error: las versiones se sacan desde la rama moca." >&2
+    exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+    echo "Error: hay cambios sin commit. Haz commit antes de sacar una versión." >&2
+    exit 1
+fi
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+    echo "Error: el tag v$VERSION ya existe." >&2
+    exit 1
+fi
+
+echo "==> Versión $VERSION en app/Cargo.toml"
+# Solo la línea de versión del [package] (la primera del archivo).
+sed -i '' "1,/^version = /s/^version = \".*\"/version = \"$VERSION\"/" app/Cargo.toml
+
+echo "==> Compilando release (la primera vez tarda bastante)"
+[ -f ~/.cargo/env ] && source ~/.cargo/env
+./script/run --release --dont-open
+
+APP="target/release/bundle/osx/Moca Warp.app"
+codesign --verify --deep --strict "$APP"
+echo "==> Firma: $(codesign -dv "$APP" 2>&1 | grep TeamIdentifier)"
+
+echo "==> Instalando en /Applications"
+osascript -e 'tell application "Moca Warp" to quit' >/dev/null 2>&1 || true
+sleep 2
+rm -rf "/Applications/Moca Warp.app"
+ditto "$APP" "/Applications/Moca Warp.app"
+
+echo "==> Commit y tag v$VERSION"
+git add app/Cargo.toml Cargo.lock
+git diff --cached --quiet || git commit -q -m "Moca Warp v$VERSION"
+git tag -a "v$VERSION" -m "Moca Warp v$VERSION"
+git push -q origin moca "v$VERSION"
+
+if [ "$PUBLICAR" = true ]; then
+    ZIP="target/release/Moca-Warp-$VERSION.zip"
+    echo "==> GitHub Release v$VERSION"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+    gh release create "v$VERSION" "$ZIP" --repo davinchoMoCa/warp \
+        --title "Moca Warp v$VERSION" --notes "Moca Warp v$VERSION"
+fi
+
+echo "Listo: Moca Warp v$VERSION instalada en /Applications."

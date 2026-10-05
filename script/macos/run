@@ -145,7 +145,15 @@ if [[ ",$FEATURES," =~ ",warp_control_cli," ]]; then
 fi
 
 echo "Codesigning app..."
-SIGNING_CERT="$(security find-identity -p codesigning -v | grep "Apple Development" | awk '{print $2}' | head -1)"
+# moca: firma con "Apple Development: Jose David Moreira" (equipo DSXB7C9XQA).
+# Se puede cambiar con MOCA_SIGNING_CERT; si no está en el llavero, firma ad-hoc.
+MOCA_SIGNING_CERT="${MOCA_SIGNING_CERT:-CEFD043726E5D14EE1681BBA71704B1567C4523F}"
+if security find-identity -p codesigning -v | grep -q "$MOCA_SIGNING_CERT"; then
+    SIGNING_CERT="$MOCA_SIGNING_CERT"
+else
+    echo "Aviso: certificado $MOCA_SIGNING_CERT no encontrado; firma ad-hoc." >&2
+    SIGNING_CERT="-"
+fi
 codesign --force --deep --options runtime --sign "${SIGNING_CERT:--}" "$WARP_APP_PATH" --entitlements script/Debug-Entitlements.plist
 
 if [ "$DONT_OPEN" = false ] ; then
