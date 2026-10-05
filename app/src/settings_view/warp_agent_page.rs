@@ -3251,7 +3251,8 @@ fn render_global_ai_toggle(
     }
 
     // Show sign-up button for anonymous users, toggle for logged-in users
-    if is_anonymous {
+    // moca: sin cuentas
+    if is_anonymous && !warp_core::moca::ACCOUNTS_DISABLED {
         row.add_child(
             Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -6085,6 +6086,11 @@ impl SettingsWidget for ApiKeysWidget {
                         )]
                     }
                 }
+            } else if warp_core::moca::ACCOUNTS_DISABLED {
+                // moca: sin cuentas
+                vec![FormattedTextFragment::plain_text(
+                    "API keys propias no disponibles en Moca Warp.",
+                )]
             } else if FeatureFlag::SoloUserByok.is_enabled()
                 && auth_state.is_anonymous_or_logged_out()
             {

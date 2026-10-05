@@ -606,7 +606,6 @@ default = [
     "agent_tips",
     "pluggable_notifications",
     "agent_onboarding",
-    "account_first_onboarding",
     "global_search",
     "cloud_conversations",
     "list_skills",
@@ -1035,11 +1034,11 @@ stored_screenshots = []
 [package.metadata.bundle.bin.warp-oss]
 category = "public.app-category.developer-tools"
 copyright = "© 2025, Denver Technologies, Inc"
-identifier = "dev.warp.WarpOss"
-name = "WarpOss"
+identifier = "gt.moca.MocaWarp"
+name = "Moca Warp"
 resources = ["assets/onboarding"]
 icon = ["channels/oss/icon/no-padding/512x512.png", "channels/oss/icon/no-padding/icon.ico"]
-short_description = "The open-source, cloud-backed terminal for individuals and teams."
+short_description = "Moca Warp: fork local de Warp, sin nube."
 
 [package.metadata.bundle.bin.stable]
 category = "public.app-category.developer-tools"

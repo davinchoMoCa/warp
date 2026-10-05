@@ -126,7 +126,10 @@ impl DetailsBar {
             ),
         };
 
-        if matches!(editability, ContentEditability::RequiresLogin) {
+        // moca: sin cuentas
+        if !warp_core::moca::ACCOUNTS_DISABLED
+            && matches!(editability, ContentEditability::RequiresLogin)
+        {
             let ui_builder = appearance.ui_builder().clone();
             edit_button = edit_button.with_tooltip(move || {
                 ui_builder

@@ -640,19 +640,24 @@ impl ReferralsWidget {
             ..Default::default()
         };
 
-        let sign_up_button = appearance
-            .ui_builder()
-            .button(
-                ButtonVariant::Accent,
-                self.sign_up_button_mouse_state.clone(),
-            )
-            .with_style(button_styles)
-            .with_text_label("Sign up".to_owned())
-            .build()
-            .on_click(move |ctx, _, _| {
-                ctx.dispatch_typed_action(ReferralsPageAction::SignupAnonymousUser);
-            })
-            .finish();
+        // moca: sin cuentas
+        let sign_up_button = if warp_core::moca::ACCOUNTS_DISABLED {
+            Flex::row().finish()
+        } else {
+            appearance
+                .ui_builder()
+                .button(
+                    ButtonVariant::Accent,
+                    self.sign_up_button_mouse_state.clone(),
+                )
+                .with_style(button_styles)
+                .with_text_label("Sign up".to_owned())
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(ReferralsPageAction::SignupAnonymousUser);
+                })
+                .finish()
+        };
 
         Flex::column()
             .with_child(

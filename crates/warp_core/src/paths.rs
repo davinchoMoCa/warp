@@ -136,7 +136,7 @@ pub fn data_dir() -> PathBuf {
 #[cfg(any(not(target_os = "macos"), test))]
 fn gui_app_id_for_channel(channel: Channel, current_app_id: AppId) -> AppId {
     match channel {
-        Channel::Oss => AppId::new("dev", "warp", "WarpOss"),
+        Channel::Oss => AppId::new("gt", "moca", "MocaWarp"),
         Channel::Stable
         | Channel::Preview
         | Channel::Dev
@@ -372,7 +372,7 @@ fn project_dirs_for_app_id(
             // match our Linux package name.
             let base_app_name = match app_id.application_name() {
                 "Warp" => "Warp-Terminal".to_owned(),
-                "WarpOss" => "Warp-Oss".to_owned(),
+                "MocaWarp" => "Moca-Warp".to_owned(),
                 other if other.starts_with("Warp") => other.replace("Warp", "Warp-Terminal-"),
                 _ => app_id.application_name().to_owned(),
             };

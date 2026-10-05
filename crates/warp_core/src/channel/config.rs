@@ -63,6 +63,18 @@ impl WarpServerConfig {
             iap_config: None,
         }
     }
+
+    /// Config with no reachable Warp server: every request is refused locally, so
+    /// cloud features (AI, Drive, sharing, login) fail fast instead of calling home.
+    pub fn offline() -> Self {
+        Self {
+            server_root_url: "http://127.0.0.1:1".into(),
+            rtc_server_url: "ws://127.0.0.1:1/graphql/v2".into(),
+            session_sharing_server_url: None,
+            firebase_auth_api_key: "".into(),
+            iap_config: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -80,6 +92,14 @@ impl OzConfig {
     pub fn production() -> Self {
         Self {
             oz_root_url: "https://oz.warp.dev".into(),
+            workload_audience_url: None,
+        }
+    }
+
+    /// Oz config with no reachable server; see [`WarpServerConfig::offline`].
+    pub fn offline() -> Self {
+        Self {
+            oz_root_url: "http://127.0.0.1:1".into(),
             workload_audience_url: None,
         }
     }

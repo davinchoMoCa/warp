@@ -157,6 +157,10 @@ impl SettingsWidget for WarpDriveHeaderWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
+        // moca: sin cuentas
+        if warp_core::moca::ACCOUNTS_DISABLED {
+            return false;
+        }
         FeatureFlag::SkipFirebaseAnonymousUser.is_enabled()
             && AuthStateProvider::as_ref(app)
                 .get()

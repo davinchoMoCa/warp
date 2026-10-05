@@ -10088,7 +10088,8 @@ impl Workspace {
             MenuItem::Separator,
         ]);
 
-        if self.auth_state.is_anonymous_or_logged_out() {
+        // moca: sin cuentas
+        if self.auth_state.is_anonymous_or_logged_out() && !warp_core::moca::ACCOUNTS_DISABLED {
             items.push(
                 MenuItemFields::new("Sign up")
                     .with_on_select_action(WorkspaceAction::SignupAnonymousUser)
@@ -22429,6 +22430,10 @@ impl Workspace {
     }
 
     fn render_reauth_banner_element(&self) -> Option<WorkspaceBannerFields> {
+        // moca: sin cuentas
+        if warp_core::moca::ACCOUNTS_DISABLED {
+            return None;
+        }
         if self.reauth_banner_dismissed || !self.auth_state.needs_reauth() {
             return None;
         }

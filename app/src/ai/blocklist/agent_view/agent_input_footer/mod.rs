@@ -2164,13 +2164,18 @@ impl AgentInputFooter {
             .get()
             .is_anonymous_or_logged_out();
         let tooltip = if login_required {
-            START_REMOTE_CONTROL_LOGIN_REQUIRED_TOOLTIP
+            // moca: sin cuentas
+            if warp_core::moca::ACCOUNTS_DISABLED {
+                None
+            } else {
+                Some(START_REMOTE_CONTROL_LOGIN_REQUIRED_TOOLTIP)
+            }
         } else {
-            START_REMOTE_CONTROL_TOOLTIP
+            Some(START_REMOTE_CONTROL_TOOLTIP)
         };
         self.start_remote_control_button.update(ctx, |button, ctx| {
             button.set_disabled(login_required, ctx);
-            button.set_tooltip(Some(tooltip), ctx);
+            button.set_tooltip(tooltip, ctx);
         });
     }
 

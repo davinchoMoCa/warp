@@ -3986,6 +3986,11 @@ impl DriveIndex {
         appearance: &Appearance,
         ctx: &AppContext,
     ) -> Option<Box<dyn Element>> {
+        // moca: sin cuentas
+        if warp_core::moca::ACCOUNTS_DISABLED {
+            return None;
+        }
+
         let personal_object_limits = self.auth_state.personal_object_limits()?;
 
         let num_workflows = CloudModel::as_ref(ctx)

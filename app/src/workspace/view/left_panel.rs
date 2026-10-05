@@ -254,7 +254,7 @@ impl LeftPanelView {
         view: ToolPanelView,
         availability: ToolPanelAvailability,
     ) -> Box<dyn Element> {
-        let (title, description) = match (view, availability) {
+        let (mut title, mut description) = match (view, availability) {
             (ToolPanelView::WarpDrive, ToolPanelAvailability::RequiresAccount) => (
                 "Sign in to access Warp Drive",
                 "Create an account to save and share workflows, notebooks, prompts, and more.",
@@ -285,6 +285,13 @@ impl LeftPanelView {
                 )
             }
         };
+        // moca: sin cuentas
+        if warp_core::moca::ACCOUNTS_DISABLED
+            && availability == ToolPanelAvailability::RequiresAccount
+        {
+            title = "No disponible en Moca Warp";
+            description = "";
+        }
         let theme = appearance.theme();
         let title = appearance
             .ui_builder()
@@ -314,7 +321,10 @@ impl LeftPanelView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(title)
             .with_child(Container::new(description).with_margin_top(8.).finish());
-        if availability == ToolPanelAvailability::RequiresAccount {
+        // moca: sin cuentas
+        if availability == ToolPanelAvailability::RequiresAccount
+            && !warp_core::moca::ACCOUNTS_DISABLED
+        {
             let sign_in = appearance
                 .ui_builder()
                 .button(
