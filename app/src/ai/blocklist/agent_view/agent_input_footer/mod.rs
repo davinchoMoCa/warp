@@ -1576,8 +1576,10 @@ impl AgentInputFooter {
         // Hide ShareSession for shared ambient (cloud) agent sessions —
         // it doesn't make sense to offer remote-control when already
         // viewing a cloud agent's shared session.
+        // moca: sin cuentas — /remote-control depende de la nube de Warp.
         if matches!(item, AgentToolbarItemKind::ShareSession)
-            && (is_conversation_transcript_context
+            && (warp_core::moca::ACCOUNTS_DISABLED
+                || is_conversation_transcript_context
                 || self.terminal_model.lock().is_shared_ambient_agent_session())
         {
             return None;
@@ -1604,7 +1606,8 @@ impl AgentInputFooter {
                 None
             }
             AgentToolbarItemKind::ShareSession => {
-                if is_conversation_transcript_context {
+                // moca: sin cuentas — /remote-control depende de la nube de Warp.
+                if warp_core::moca::ACCOUNTS_DISABLED || is_conversation_transcript_context {
                     return None;
                 }
                 let enabled = FeatureFlag::CreatingSharedSessions.is_enabled()
@@ -2432,7 +2435,8 @@ impl AgentInputFooter {
                 Some(stack.finish())
             }
             AgentToolbarItemKind::ShareSession => {
-                if is_conversation_transcript_context {
+                // moca: sin cuentas — /remote-control depende de la nube de Warp.
+                if warp_core::moca::ACCOUNTS_DISABLED || is_conversation_transcript_context {
                     return None;
                 }
                 let enabled = FeatureFlag::CreatingSharedSessions.is_enabled()
