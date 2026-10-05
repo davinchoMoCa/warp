@@ -246,11 +246,8 @@ fn test_build_tree_labels_subagent() {
     let tree = build_tree(&procs, 100);
     let commands: Vec<&str> = tree.rows.iter().map(|r| r.command.as_str()).collect();
     let depths: Vec<usize> = tree.rows.iter().map(|r| r.depth).collect();
-    assert_eq!(
-        commands,
-        vec!["claude", "subagente", "zsh run.sh m", "opencode · glm-5.3"]
-    );
-    assert_eq!(depths, vec![0, 1, 2, 3]);
+    assert_eq!(commands, vec!["claude", "subagente", "opencode · glm-5.3"]);
+    assert_eq!(depths, vec![0, 1, 2]);
 }
 
 #[test]
@@ -275,4 +272,16 @@ fn test_build_tree_claude_command_without_agent_is_not_subagent() {
         commands,
         vec!["claude", "$ ./progreso.sh", "bash progreso.sh"]
     );
+}
+
+#[test]
+fn test_build_tree_keeps_script_without_agent() {
+    let procs = vec![
+        p(200, 100, &["claude"], 60),
+        p(210, 200, &["python3", "/tmp/a/gen.py"], 5),
+        p(211, 210, &["node", "/tmp/a/worker.js"], 5),
+    ];
+    let tree = build_tree(&procs, 100);
+    let commands: Vec<&str> = tree.rows.iter().map(|r| r.command.as_str()).collect();
+    assert_eq!(commands, vec!["claude", "python3 gen.py", "node worker.js"]);
 }

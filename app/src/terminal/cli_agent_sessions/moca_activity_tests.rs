@@ -211,3 +211,14 @@ fn test_format_activity_strips_cd_prefix() {
     );
     assert_eq!(format_activity("Bash", Some("cd /tmp")), "Bash: cd /tmp");
 }
+
+#[test]
+fn test_format_activity_strips_leading_assignments() {
+    assert_eq!(
+        format_activity(
+            "Bash",
+            Some("cd /tmp/d && s=$(date +%s); ./progreso.sh; echo hecho")
+        ),
+        "Bash: ./progreso.sh; echo hecho"
+    );
+}

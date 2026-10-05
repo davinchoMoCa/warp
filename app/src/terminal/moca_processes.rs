@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::terminal::cli_agent_sessions::moca_activity::strip_cd_prefix;
+use crate::terminal::cli_agent_sessions::moca_activity::{
+    strip_cd_prefix, strip_leading_assignments,
+};
 
 /// Máximo de filas en la tarjeta; el resto se resume como "+N más".
 pub const MAX_ROWS: usize = 8;
@@ -69,15 +71,22 @@ pub fn build_tree(processes: &[RawProcess], shell_pid: u32) -> ProcessTree {
         if !visited.insert(pid) {
             continue;
         }
+        let process = processes.iter().find(|p| p.pid == pid);
+        // Un script que solo lanza un agente (p. ej. run.sh de delegar) repite lo que
+        // ya dice la fila del agente; se oculta y sus hijos suben un nivel.
+        let collapse = process.is_some_and(|process| {
+            is_script_launcher(process) && subtree_has_agent(&children, pid)
+        });
+        let kid_depth = if collapse { depth } else { depth + 1 };
         if let Some(kids) = children.get(&pid) {
             for kid in kids.iter().rev().filter(|kid| !is_background(kid)) {
-                stack.push((kid.pid, depth + 1));
+                stack.push((kid.pid, kid_depth));
             }
         }
-        if pid == shell_pid {
+        if pid == shell_pid || collapse {
             continue;
         }
-        if let Some(process) = processes.iter().find(|p| p.pid == pid) {
+        if let Some(process) = process {
             // Un comando de Claude que lanza otro agente (p. ej. delegar → opencode) es
             // ilegible como comando; lo que importa es que ahí trabaja un subagente.
             let command =
@@ -108,6 +117,12 @@ const AGENT_PROGRAMS: &[&str] = &["opencode", "claude", "codex", "gemini", "aide
 
 /// Intérpretes cuyo primer argumento suele ser la ruta de un script.
 const INTERPRETERS: &[&str] = &["zsh", "bash", "sh", "python", "python3", "node", "ruby"];
+
+/// Intérprete corriendo un archivo de script (no `-c` ni REPL).
+fn is_script_launcher(process: &RawProcess) -> bool {
+    INTERPRETERS.contains(&program_name(process).as_str())
+        && process.cmd.get(1).is_some_and(|arg| !arg.starts_with('-'))
+}
 
 fn subtree_has_agent(children: &HashMap<u32, Vec<&RawProcess>>, pid: u32) -> bool {
     let mut pending = vec![pid];
@@ -165,29 +180,6 @@ fn agent_shell_command(process: &RawProcess) -> Option<String> {
     let end = rest.find("' < /dev/null").or_else(|| rest.rfind('\''))?;
     let command = strip_leading_assignments(strip_cd_prefix(rest[..end].trim()));
     (!command.is_empty()).then(|| command.to_owned())
-}
-
-/// `s=$(date +%s); ./progreso.sh` → `./progreso.sh`: las asignaciones no dicen qué se corre.
-fn strip_leading_assignments(command: &str) -> &str {
-    let mut rest = command;
-    while let Some((head, tail)) = rest.split_once(';') {
-        if !is_assignment(head.trim()) {
-            break;
-        }
-        rest = tail.trim_start();
-    }
-    rest
-}
-
-fn is_assignment(segment: &str) -> bool {
-    let Some((name, _)) = segment.split_once('=') else {
-        return false;
-    };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// `-m ollama/glm-5.3:cloud` → `glm-5.3`.

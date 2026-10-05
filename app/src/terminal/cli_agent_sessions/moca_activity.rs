@@ -112,7 +112,8 @@ pub fn format_activity(tool: &str, detail: Option<&str>) -> String {
     let Some(detail) = detail.map(str::trim).filter(|d| !d.is_empty()) else {
         return tool.to_owned();
     };
-    let first_line = strip_cd_prefix(detail.lines().next().unwrap_or(detail));
+    let first_line =
+        strip_leading_assignments(strip_cd_prefix(detail.lines().next().unwrap_or(detail)));
     let detail = if first_line.starts_with('/') || first_line.contains(":\\") {
         first_line
             .rsplit(['/', '\\'])
@@ -133,6 +134,29 @@ pub(crate) fn strip_cd_prefix(mut command: &str) -> &str {
         command = rest.trim_start();
     }
     command
+}
+
+/// `s=$(date +%s); ./progreso.sh` → `./progreso.sh`: las asignaciones no dicen qué se corre.
+pub(crate) fn strip_leading_assignments(command: &str) -> &str {
+    let mut rest = command;
+    while let Some((head, tail)) = rest.split_once(';') {
+        if !is_assignment(head.trim()) {
+            break;
+        }
+        rest = tail.trim_start();
+    }
+    rest
+}
+
+fn is_assignment(segment: &str) -> bool {
+    let Some((name, _)) = segment.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// `12 s` → `hace 12 s`, `3 min`, `2 h`.
