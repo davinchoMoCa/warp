@@ -47,21 +47,30 @@ La app queda en `target/debug/bundle/osx/Moca Warp.app`. No hace falta el `./scr
 ```powershell
 git clone -b moca https://github.com/davinchoMoCa/warp.git
 cd warp
-.\script\moca\instalar.ps1            # Surface y demás: baja e instala el último Release
+.\script\moca\instalar.ps1            # Surface, S12 y demás: baja e instala el último Release
 .\script\moca\instalar.ps1 -Version 0.2.0
-.\script\moca\instalar.ps1 -Compilar -Pull -Publicar   # robcod14: compila la versión nueva y la sube al Release
+.\script\moca\instalar.ps1 -Compilar -Pull -Publicar   # robcod14: compila x64 y arm64 y los sube al Release
 ```
 
-Queda en `%LOCALAPPDATA%\Programs\MocaWarp`, con acceso directo **MocaWarp** en el menú Inicio y desinstalador en Programas instalados. El instalador no está firmado: la primera vez Windows SmartScreen puede pedir confirmación.
+Sin clonar el repo (por ejemplo en una máquina que solo instala):
+
+```powershell
+irm https://raw.githubusercontent.com/davinchoMoCa/warp/moca/script/moca/instalar.ps1 -OutFile $env:TEMP\instalar.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\instalar.ps1
+```
+
+El script detecta la arquitectura de la máquina y baja `MocaWarp-X.Y.Z-Windows-x64-Setup.exe` o `MocaWarp-X.Y.Z-Windows-arm64-Setup.exe` (Snapdragon, como la Surface S12; nativo, sin emulación). Queda en `%LOCALAPPDATA%\Programs\MocaWarp`, con acceso directo **MocaWarp** en el menú Inicio y desinstalador en Programas instalados. El instalador no está firmado: la primera vez Windows SmartScreen puede pedir confirmación.
 
 Para compilar local en vez de descargar (`-Compilar`, o `-Compilar -Pull` para traer antes la rama `moca`) hacen falta Visual Studio Build Tools con C++, rustup, protoc, Inno Setup 6 y `cargo install cargo-about --locked --features cli`. La primera compilación tarda unos 45 minutos con 16 núcleos.
+
+arm64 se compila en cruzado desde x64 (siempre después de x64, porque reutiliza su settings schema) y además requiere el componente MSVC ARM64 (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`), `rustup target add aarch64-pc-windows-msvc` y LLVM (`winget install LLVM.LLVM`): `aws-lc-sys` necesita `clang-cl` para su ensamblador ARM. La primera compilación arm64 tarda unos 65 minutos.
 
 ## Plataformas
 
 | Plataforma | Rol | Cómo llega una versión |
 |---|---|---|
 | macOS | Principal: ahí se desarrolla y se sacan las versiones | `./script/moca/release X.Y.Z --publicar` |
-| Windows | Secundaria | robcod14 compila el instalador con `instalar.ps1 -Compilar -Pull -Publicar` y lo sube al Release; la Surface lo instala con `instalar.ps1`. El workflow `moca-release.yml` ya no corre en cada tag: queda de respaldo, a mano |
+| Windows (x64 y arm64) | Secundaria | robcod14 compila los instaladores x64 y arm64 con `instalar.ps1 -Compilar -Pull -Publicar` y los sube al Release; la Surface (x64) y la S12 (arm64) los instalan con `instalar.ps1`. El workflow `moca-release.yml` ya no corre en cada tag: queda de respaldo, a mano |
 | Linux | Pendiente | — |
 
 Los cambios específicos de una plataforma van detrás de `#[cfg(target_os = "...")]`; los de Moca (offline, sin cuentas, onboarding) aplican a todas. El workflow también se puede lanzar a mano (Actions → Moca Warp release → Run workflow) para comprobar que un cambio no rompe Windows; deja el instalador como artifact del run sin tocar ningún Release.
