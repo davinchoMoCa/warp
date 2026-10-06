@@ -6,8 +6,9 @@
 #   .\script\moca\instalar.ps1              # baja el instalador del último GitHub Release
 #   .\script\moca\instalar.ps1 -Version 0.2.0
 #   .\script\moca\instalar.ps1 -Compilar    # compila local lo que haya en el checkout
-#   .\script\moca\instalar.ps1 -Compilar -Pull -Publicar   # robcod14: compila la última
-#                                                         # versión y la sube al Release
+#   .\script\moca\instalar.ps1 -Compilar -Arquitecturas arm64   # compilación cruzada (requiere compilar x64 antes)
+#   .\script\moca\instalar.ps1 -Compilar -Pull -Publicar   # robcod14: compila x64 y arm64
+#                                                         # y los sube al Release
 #
 # Las versiones se sacan desde la Mac con script/moca/release. El instalador de Windows se
 # compila en robcod14 con -Compilar -Pull -Publicar y las demás máquinas (Surface) lo bajan
@@ -16,6 +17,8 @@
 #
 # -Compilar requiere Visual Studio Build Tools (C++), rustup, protoc, Inno Setup 6 y cargo-about.
 # -Publicar requiere además gh con sesión iniciada (gh auth login).
+# arm64 en una máquina x64 requiere además el componente MSVC ARM64 (Microsoft.VisualStudio.Component.VC.Tools.ARM64),
+# `rustup target add aarch64-pc-windows-msvc` y LLVM (winget install LLVM.LLVM) por clang-cl.
 
 Param(
     # Versión a instalar (X.Y.Z). Por defecto, la del último Release.
@@ -27,7 +30,10 @@ Param(
     # Con -Compilar: hace git pull de la rama moca antes de compilar.
     [Switch]$Pull,
     # Con -Compilar: sube el instalador al GitHub Release vX.Y.Z (lo crea si no existe).
-    [Switch]$Publicar
+    [Switch]$Publicar,
+    # Con -Compilar: arquitecturas a compilar. Por defecto, la de esta máquina; con -Publicar, x64 y arm64.
+    [ValidateSet('x64', 'arm64')]
+    [String[]]$Arquitecturas = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +41,7 @@ $ErrorActionPreference = 'Stop'
 $Repo = 'davinchoMoCa/warp'
 $RepoRoot = (Get-Item "$PSScriptRoot\..\..").FullName
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\warp-terminal-oss_is1'
+$LocalArch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x64' }
 
 function Install-MocaWarp([String]$Installer) {
     Write-Output '==> Cerrando Moca Warp si está abierta'
@@ -69,9 +76,9 @@ if (-not $Compilar) {
     } catch {
         throw "No encontré el Release ($Api). ¿Ya se publicó desde la Mac?"
     }
-    $Asset = $Release.assets | Where-Object name -like '*-Windows-x64-Setup.exe' | Select-Object -First 1
+    $Asset = $Release.assets | Where-Object name -like "*-Windows-$LocalArch-Setup.exe" | Select-Object -First 1
     if (-not $Asset) {
-        throw "El Release $($Release.tag_name) todavía no tiene instalador de Windows. Revisa https://github.com/$Repo/actions/workflows/moca-release.yml"
+        throw "El Release $($Release.tag_name) todavía no tiene instalador de Windows $LocalArch. Revisa https://github.com/$Repo/actions/workflows/moca-release.yml"
     }
     if ($Current -eq $Release.tag_name -and -not $Forzar) {
         Write-Output "Moca Warp $Current ya está instalada (usa -Forzar para reinstalar)."
@@ -92,7 +99,9 @@ $env:Path = @(
     [Environment]::GetEnvironmentVariable('Path', 'Machine'),
     [Environment]::GetEnvironmentVariable('Path', 'User'),
     "$env:LOCALAPPDATA\Programs\Inno Setup 6",
-    "${env:ProgramFiles(x86)}\Inno Setup 6"
+    "${env:ProgramFiles(x86)}\Inno Setup 6",
+    # clang-cl: aws-lc-sys lo necesita para el ensamblador ARM al compilar arm64.
+    "$env:ProgramFiles\LLVM\bin"
 ) -join ';'
 
 $Tools = @('cargo', 'protoc', 'ISCC', 'cargo-about') + $(if ($Publicar) { @('gh') } else { @() })
@@ -113,24 +122,38 @@ $LocalVersion = (Select-String -Path 'app\Cargo.toml' -Pattern '^version = "(.+)
 $env:GIT_RELEASE_TAG = "v$LocalVersion"
 Write-Output "==> Compilando Moca Warp v$LocalVersion ($(git rev-parse --short HEAD)) en release (la primera vez tarda bastante)"
 
-& "$RepoRoot\script\windows\bundle.ps1" -CHANNEL oss
-if (-not $?) { throw 'La compilación falló.' }
+if ($Arquitecturas.Count -eq 0) { $Arquitecturas = if ($Publicar) { @('x64', 'arm64') } else { @($LocalArch) } }
+$Arquitecturas = @(@('x64', 'arm64') | Where-Object { $Arquitecturas -contains $_ })
+$SchemaX64 = "$RepoRoot\target\x86_64-pc-windows-msvc\rlto\resources\settings_schema.json"
+$Built = @{}
 
-$Built = "$RepoRoot\script\windows\Output\MocaWarpSetup.exe"
+foreach ($Arch in $Arquitecturas) {
+    Write-Output "==> Compilando $Arch"
+    Remove-Item Env:SETTINGS_SCHEMA_EXECUTABLE, Env:SETTINGS_SCHEMA_SOURCE -ErrorAction SilentlyContinue
+    if ($Arch -eq 'arm64' -and $LocalArch -eq 'x64') {
+        if (-not (Test-Path $SchemaX64)) { throw "Para compilar arm64 en x64 primero hay que compilar x64 (falta $SchemaX64)." }
+        $env:SETTINGS_SCHEMA_SOURCE = $SchemaX64
+    }
+    & "$RepoRoot\script\windows\bundle.ps1" -CHANNEL oss -ARCH $Arch
+    if (-not $?) { throw "La compilación $Arch falló." }
+    $Built[$Arch] = if ($Arch -eq 'arm64') { "$RepoRoot\script\windows\Output\MocaWarpSetup-arm64.exe" } else { "$RepoRoot\script\windows\Output\MocaWarpSetup.exe" }
+}
 
 if ($Publicar) {
     $Tag = "v$LocalVersion"
-    $Asset = Join-Path $env:TEMP "MocaWarp-$LocalVersion-Windows-x64-Setup.exe"
-    Copy-Item $Built $Asset -Force
-    Write-Output "==> Subiendo $(Split-Path $Asset -Leaf) al Release $Tag"
     gh release view $Tag --repo $Repo *> $null
     if (-not $?) {
         gh release create $Tag --repo $Repo --title "Moca Warp $Tag" --notes "Moca Warp $Tag"
         if (-not $?) { throw "No pude crear el Release $Tag." }
     }
-    gh release upload $Tag $Asset --repo $Repo --clobber
-    if (-not $?) { throw "No pude subir el instalador al Release $Tag." }
-    Remove-Item $Asset -Force
+    foreach ($Arch in $Arquitecturas) {
+        $Asset = Join-Path $env:TEMP "MocaWarp-$LocalVersion-Windows-$Arch-Setup.exe"
+        Copy-Item $Built[$Arch] $Asset -Force
+        Write-Output "==> Subiendo $(Split-Path $Asset -Leaf) al Release $Tag"
+        gh release upload $Tag $Asset --repo $Repo --clobber
+        if (-not $?) { throw "No pude subir el instalador $Arch al Release $Tag." }
+        Remove-Item $Asset -Force
+    }
 }
 
-Install-MocaWarp $Built
+if ($Built.ContainsKey($LocalArch)) { Install-MocaWarp $Built[$LocalArch] } else { Write-Output "No se instala en esta máquina ($LocalArch no se compiló)." }
