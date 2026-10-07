@@ -118,6 +118,13 @@ if ($Pull) {
     if (-not $?) { throw 'git pull falló.' }
 }
 
+# Repo privado del marketplace de Moca (no va en el código público).
+$MarketplaceFile = Join-Path $HOME '.config\moca\marketplace'
+if (-not $env:MOCA_MARKETPLACE_REPO -and (Test-Path $MarketplaceFile)) {
+    $env:MOCA_MARKETPLACE_REPO = (Get-Content $MarketplaceFile -Raw).Trim()
+}
+if (-not $env:MOCA_MARKETPLACE_REPO) { Write-Warning 'Sin MOCA_MARKETPLACE_REPO: el plugin de Moca no se instalará desde la app.' }
+
 $LocalVersion = (Select-String -Path 'app\Cargo.toml' -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
 $env:GIT_RELEASE_TAG = "v$LocalVersion"
 Write-Output "==> Compilando Moca Warp v$LocalVersion ($(git rev-parse --short HEAD)) en release (la primera vez tarda bastante)"

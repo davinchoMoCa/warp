@@ -47,6 +47,11 @@ sed -i '' "1,/^version = /s/^version = \".*\"/version = \"$VERSION\"/" app/Cargo
 
 echo "==> Compilando release (la primera vez tarda bastante)"
 [ -f ~/.cargo/env ] && source ~/.cargo/env
+# Repo privado del marketplace de Moca (no va en el código público).
+if [ -z "${MOCA_MARKETPLACE_REPO:-}" ] && [ -f ~/.config/moca/marketplace ]; then
+    export MOCA_MARKETPLACE_REPO="$(tr -d '[:space:]' < ~/.config/moca/marketplace)"
+fi
+[ -n "${MOCA_MARKETPLACE_REPO:-}" ] || echo "Aviso: sin MOCA_MARKETPLACE_REPO; el plugin de Moca no se instalará desde la app." >&2
 ./script/run --release --dont-open
 
 APP="target/release/bundle/osx/Moca Warp.app"

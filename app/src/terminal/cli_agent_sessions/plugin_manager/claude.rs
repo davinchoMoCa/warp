@@ -19,8 +19,10 @@ const PLATFORM_PLUGIN_KEY: &str = "oz-harness-support@claude-code-warp";
 const MARKETPLACE_REPO: &str = "warpdotdev/claude-code-warp";
 const MARKETPLACE_NAME: &str = "claude-code-warp";
 
-// moca: plugin moca-warp
-const MOCA_MARKETPLACE_REPO: &str = "robco@100.124.2.82:repos/claude-skills.git";
+// moca: plugin moca-warp. El repo del marketplace es privado: se toma de la variable
+// MOCA_MARKETPLACE_REPO al compilar (script/moca/release la lee de
+// ~/.config/moca/marketplace). Sin ella, el plugin de Moca simplemente no se instala.
+const MOCA_MARKETPLACE_REPO: Option<&str> = option_env!("MOCA_MARKETPLACE_REPO");
 // moca: plugin moca-warp
 const MOCA_PLUGIN_KEY: &str = "moca-warp@moca";
 
@@ -58,11 +60,11 @@ impl ClaudeCodePluginManager {
 
     // moca: plugin moca-warp
     async fn install_moca_plugin(&self, log: &mut String) -> Result<(), PluginInstallError> {
-        self.run_logged(
-            &["plugin", "marketplace", "add", MOCA_MARKETPLACE_REPO],
-            log,
-        )
-        .await?;
+        let Some(repo) = MOCA_MARKETPLACE_REPO.filter(|r| !r.is_empty()) else {
+            return Ok(());
+        };
+        self.run_logged(&["plugin", "marketplace", "add", repo], log)
+            .await?;
         self.run_logged(&["plugin", "install", MOCA_PLUGIN_KEY], log)
             .await?;
         Ok(())
@@ -252,7 +254,7 @@ static INSTALL_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| Plu
         // moca: plugin moca-warp
         PluginInstructionStep {
             description: "Add the Moca plugin marketplace",
-            command: "claude plugin marketplace add robco@100.124.2.82:repos/claude-skills.git",
+            command: "claude plugin marketplace add \"$MOCA_MARKETPLACE_REPO\"",
             executable: true,
             link: None,
         },
