@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "moca-pty-proxy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+futures-util = "0.3.34"
+portable-pty = "0.9.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.53.2", features = ["full"] }
+tokio-tungstenite = "0.30.0"
+url = "2.5.8"
