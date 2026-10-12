@@ -4,7 +4,8 @@
 //! system, implementations of the API for various platforms, testing
 //! utilities, and extension traits to improve ergonomics of using the APIs.
 
-#[cfg(not(target_family = "wasm"))]
+// moca: ios — por ahora sin almacenamiento seguro, como en web (después: Keychain de iOS).
+#[cfg(not(any(target_family = "wasm", target_os = "ios")))]
 #[cfg_attr(target_os = "macos", path = "mac.rs")]
 #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), path = "linux.rs")]
 #[cfg_attr(target_os = "windows", path = "windows.rs")]
@@ -13,7 +14,7 @@ mod noop;
 mod unavailable;
 
 // Treat this as a noop on web, as there is no backing storage which is "secure".
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "ios"))]
 use noop as imp;
 
 #[cfg(target_os = "windows")]

@@ -236,3 +236,18 @@ mod platform {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// moca: iOS — sin medición por ahora (solo se usa para telemetría y reportes).
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "ios")]
+mod platform {
+    pub fn memory_footprint_bytes() -> u64 {
+        0
+    }
+
+    pub fn memory_breakdown() -> serde_json::Value {
+        serde_json::Value::Null
+    }
+}

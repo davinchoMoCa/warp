@@ -6,6 +6,14 @@ pub mod settings;
 #[cfg(target_os = "windows")]
 mod windows;
 
+// moca: ios — en iPad no hay editores externos que abrir.
+#[cfg(target_os = "ios")]
+impl Editor {
+    pub fn is_installed(&self, _ctx: &mut warpui::AppContext) -> bool {
+        false
+    }
+}
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

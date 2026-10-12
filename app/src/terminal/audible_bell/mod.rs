@@ -8,6 +8,8 @@ use warpui::{Entity, SingletonEntity};
 #[cfg_attr(target_os = "windows", path = "windows.rs")]
 // TODO(WASM): Replace this with a functional implementation for the web.
 #[cfg_attr(target_family = "wasm", path = "noop.rs")]
+// moca: ios — sin campana por ahora.
+#[cfg_attr(target_os = "ios", path = "noop.rs")]
 mod imp;
 
 /// A singleton model that provides a way convenient way to make a "beep" when rung (via a call to
