@@ -23,3 +23,17 @@ fn session_url_ignores_blank_values() {
         "ws://127.0.0.1:3030/create?num_rows=1&num_cols=2"
     );
 }
+
+#[test]
+fn env_file_value_reads_matching_key() {
+    let contents = "# comentario\nMOCA_REMOTE_TTY_URL = ws://xps:3030/create\nMOCA_REMOTE_TTY_TOKEN=a=b\n";
+    assert_eq!(
+        env_file_value(contents, "MOCA_REMOTE_TTY_URL").as_deref(),
+        Some("ws://xps:3030/create")
+    );
+    assert_eq!(
+        env_file_value(contents, "MOCA_REMOTE_TTY_TOKEN").as_deref(),
+        Some("a=b")
+    );
+    assert_eq!(env_file_value(contents, "OTRA"), None);
+}

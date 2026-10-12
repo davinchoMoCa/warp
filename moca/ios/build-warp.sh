@@ -6,8 +6,9 @@
 #
 # Uso: moca/ios/build-warp.sh [--release] [<id-dispositivo>]
 #
-# La terminal remota usa ~/.config/moca/remote-tty.env de la Mac: se pasa como variables de
-# entorno al abrir la app desde aquí (devicectl). No va dentro del .app ni al repo.
+# La terminal remota usa ~/.config/moca/remote-tty.env de la Mac: se copia dentro del .app
+# (remote-tty.env junto al ejecutable) y también se pasa como variables de entorno al abrir la app
+# desde aquí (devicectl). Nunca va al repo.
 
 set -euo pipefail
 
@@ -43,6 +44,11 @@ echo "==> Empaquetando $APP"
 rm -rf "$APP"
 mkdir -p "$APP"
 cp "target/$TARGET/$PROFILE_DIR/warp-oss" "$APP/warp-oss"
+# URL y token de la XPS dentro del .app (firmado, solo va al iPad): así conecta aunque se abra
+# desde la pantalla de inicio. El repo es público: el archivo sale de la Mac, nunca de git.
+if [ -f "$CONFIG" ]; then
+    grep -E '^MOCA_REMOTE_TTY_(URL|TOKEN)=' "$CONFIG" > "$APP/remote-tty.env"
+fi
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' app/Cargo.toml | head -1)
 cat > "$APP/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

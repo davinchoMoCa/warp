@@ -80,8 +80,8 @@ impl EventLoop {
     }
 
     fn get_new_session_url(size_info: SizeInfo) -> String {
-        let endpoint = std::env::var(MOCA_ENDPOINT_ENV).ok();
-        let token = std::env::var(MOCA_TOKEN_ENV).ok();
+        let endpoint = moca_setting(MOCA_ENDPOINT_ENV);
+        let token = moca_setting(MOCA_TOKEN_ENV);
         session_url(
             endpoint.as_deref(),
             token.as_deref(),
@@ -243,6 +243,30 @@ impl EventLoop {
 
 impl Entity for EventLoop {
     type Event = ();
+}
+
+/// moca: archivo `CLAVE=valor` junto al ejecutable (dentro del .app en iOS) con la URL y el
+/// token, para que la app conecte aunque se abra desde la pantalla de inicio, sin variables de
+/// entorno. Lo copia ahí `moca/ios/build-warp.sh`; nunca va al repo.
+const MOCA_SETTINGS_FILE: &str = "remote-tty.env";
+
+/// moca: lee una opción de la variable de entorno o, si falta, de [`MOCA_SETTINGS_FILE`].
+fn moca_setting(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let path = std::env::current_exe().ok()?.parent()?.join(MOCA_SETTINGS_FILE);
+            env_file_value(&std::fs::read_to_string(path).ok()?, key)
+        })
+}
+
+/// moca: busca `key` en un texto con líneas `CLAVE=valor` (sin comillas ni `export`).
+fn env_file_value(contents: &str, key: &str) -> Option<String> {
+    contents.lines().find_map(|line| {
+        let (name, value) = line.trim().split_once('=')?;
+        (name.trim() == key).then(|| value.trim().to_owned())
+    })
 }
 
 /// moca: arma la URL de `/create`; un endpoint o token vacío cuenta como ausente.

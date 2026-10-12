@@ -1242,16 +1242,6 @@ impl EventLoop {
             },
             // Handle and convert touch events into mouse events.
             WindowEvent::Touch(touch) => {
-                // moca: ios — diagnóstico temporal de toques.
-                #[cfg(target_os = "ios")]
-                log::info!(
-                    "moca-touch {:?} id={} loc={:?} purpose_set={} scale={}",
-                    touch.phase,
-                    touch.id,
-                    touch.location,
-                    window_state.last_touch_purpose.is_some(),
-                    scale_factor
-                );
                 match touch.phase {
                 TouchPhase::Started => convert_touch_started(touch, window_state, scale_factor),
                 TouchPhase::Moved => {
@@ -1659,14 +1649,6 @@ impl EventLoop {
             .callbacks
             .for_window(winit_window)
             .dispatch_event(event.clone());
-        // moca: ios — diagnóstico temporal de toques.
-        #[cfg(target_os = "ios")]
-        if matches!(
-            event,
-            crate::event::Event::LeftMouseDown { .. } | crate::event::Event::LeftMouseUp { .. }
-        ) {
-            log::info!("moca-dispatch {event:?} handled={}", dispatch_result.handled);
-        }
 
         // If the app didn't handle the event, warpui might still want to do something
         // with it if it's a click within the "titlebar region" at the top.

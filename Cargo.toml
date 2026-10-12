@@ -585,3 +585,7 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 [patch."https://github.com/warpdotdev/session-sharing-protocol.git"]
 # Uncomment for local development of session-sharing-protocol
 # session-sharing-protocol = { path = "../session-sharing-protocol" }
+
+# moca: ios — copia de warpdotdev/winit@14db95a con teclado físico y puntero en iOS.
+[patch."https://github.com/warpdotdev/winit.git"]
+winit = { path = "moca/winit" }
