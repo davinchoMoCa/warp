@@ -1,0 +1,4 @@
+# Generados: el proyecto sale de project.yml y la configuración trae el token.
+*.xcodeproj
+MocaWarp/Config.generated.plist
+build/
