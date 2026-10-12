@@ -2,6 +2,8 @@ pub(crate) mod app;
 pub mod delegate;
 mod event_loop;
 pub(crate) mod fonts;
+#[cfg(target_os = "ios")] // moca: ios
+pub mod ios; // moca: ios
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub mod linux;
 

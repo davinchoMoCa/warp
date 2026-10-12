@@ -260,6 +260,9 @@ impl AppDelegate {
                         report_error!(anyhow::Error::new(err).context("Error creating Windows clipboard"));
                     }
                 }
+            } else if #[cfg(target_os = "ios")] {
+                // moca: ios — portapapeles del sistema (UIPasteboard), solo texto.
+                self.clipboard = Box::new(super::ios::IosClipboard);
             }
         }
     }
