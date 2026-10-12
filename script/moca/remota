@@ -1,0 +1,39 @@
+#!/bin/bash
+#
+# Abre Moca Warp en modo terminal remota: cada pestaña es un shell de la XPS vía moca-pty-proxy.
+# Es la misma terminal que tendrá el iPad. Usa el build de prueba (debug) con la feature
+# remote_tty; si no existe, lo compila.
+#
+# Uso: ./script/moca/remota            # abre la ventana
+#      ./script/moca/remota --compilar # recompila antes de abrir
+#
+# Lee la dirección y el token de ~/.config/moca/remote-tty.env (no van en el repo):
+#   MOCA_REMOTE_TTY_URL=ws://<ip-tailscale-xps>:3030/create
+#   MOCA_REMOTE_TTY_TOKEN=<token>
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)"
+CONFIG="$HOME/.config/moca/remote-tty.env"
+APP="$REPO_ROOT/target/debug/bundle/osx/Moca Warp.app"
+
+if [ ! -f "$CONFIG" ]; then
+    echo "Falta $CONFIG (ver moca/pty-proxy/README.md)." >&2
+    exit 1
+fi
+set -a
+# shellcheck source=/dev/null
+. "$CONFIG"
+set +a
+
+if [ "${1:-}" = "--compilar" ] || [ ! -d "$APP" ]; then
+    echo "==> Compilando Moca Warp con terminal remota (la primera vez tarda)"
+    (cd "$REPO_ROOT" && [ -f ~/.cargo/env ] && source ~/.cargo/env; ./script/run --dont-open --features remote_tty)
+fi
+
+# Entorno limpio: que la app no herede variables de la terminal desde la que se lanza
+# (p. ej. las de una sesión de Claude Code).
+env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    open -n --env MOCA_REMOTE_TTY_URL="$MOCA_REMOTE_TTY_URL" \
+    --env MOCA_REMOTE_TTY_TOKEN="$MOCA_REMOTE_TTY_TOKEN" "$APP"
+echo "Moca Warp remota abierta: escribe 'hostname' en una pestaña para comprobarlo."
