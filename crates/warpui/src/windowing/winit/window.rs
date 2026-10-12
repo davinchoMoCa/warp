@@ -1106,6 +1106,14 @@ impl Window {
         }
     }
 
+    /// moca: ios — pide el foco del teclado (first responder) para la vista de la ventana.
+    #[cfg(target_os = "ios")]
+    pub fn request_keyboard_focus(&self) {
+        if let Some(inner) = self.inner.borrow().as_ref() {
+            inner.window.set_ime_allowed(true);
+        }
+    }
+
     pub fn drag_window(&self) -> Result<(), ExternalError> {
         let inner = self.inner.borrow();
         let Some(inner) = inner.as_ref() else {
@@ -1449,6 +1457,13 @@ fn create_window(
     if let Ok(window) = created_window.as_ref() {
         window.set_ime_allowed(true);
         log::debug!("IME allowed on newly created Linux window");
+    }
+
+    // moca: ios — en iOS `set_ime_allowed(true)` hace a la vista "first responder": sin eso UIKit
+    // no le manda el teclado (ni el físico ni el de pantalla).
+    #[cfg(target_os = "ios")]
+    if let Ok(window) = created_window.as_ref() {
+        window.set_ime_allowed(true);
     }
 
     #[cfg(windows)]

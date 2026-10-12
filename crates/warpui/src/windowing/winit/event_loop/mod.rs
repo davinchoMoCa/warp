@@ -339,7 +339,10 @@ fn convert_touch_moved(
             // Touch in titlebar = window drag
             let initial_pos: winit::dpi::LogicalPosition<f32> =
                 last_touch.location.to_logical(scale_factor as f64);
-            if initial_pos.y < titlebar_height && !cfg!(target_family = "wasm") {
+            // moca: ios — en iOS no hay ventana que arrastrar (como en web).
+            if initial_pos.y < titlebar_height
+                && !cfg!(any(target_family = "wasm", target_os = "ios"))
+            {
                 let start_touch = last_touch.location;
                 window_state.last_touch_purpose = Some(TouchPurpose::WindowDrag { start_touch });
                 return Some(ConvertedEvent::MoveWindowBy {
@@ -1623,6 +1626,12 @@ impl EventLoop {
         };
 
         let winit_window = downcast_window(window.as_ref());
+        // moca: ios — cada toque vuelve a pedir el teclado: iOS puede quitarle el first
+        // responder a la vista (p. ej. al volver a la app) y entonces no llegan teclas.
+        #[cfg(target_os = "ios")]
+        if let crate::Event::LeftMouseUp { .. } = event {
+            winit_window.request_keyboard_focus();
+        }
         // There is some state on the [`winit::window::Window`] that needs to be kept
         // in sync with the cursor position in order for drag-resizing windows to work.
         if let crate::Event::MouseMoved { .. } = event
@@ -1670,7 +1679,10 @@ impl EventLoop {
         {
             // The WASM "window" does not support dragging or maximization.
             let titlebar_height = winit_window.titlebar_height();
-            if position.y() < titlebar_height && !cfg!(target_family = "wasm") {
+            // moca: ios — en iOS no hay ventana que arrastrar ni maximizar (como en web).
+            if position.y() < titlebar_height
+                && !cfg!(any(target_family = "wasm", target_os = "ios"))
+            {
                 // Double-clicking the titlebar does maximize/restore.
                 if click_count >= 2 {
                     window.toggle_maximized();

@@ -66,6 +66,22 @@ pub fn convert_keyboard_input_event(
         return None;
     }
 
+    // moca: ios — winit en iOS entrega todo lo tecleado como texto (insertText): Enter llega
+    // como Character("\n") y Tab como Character("\t"). Se traducen a teclas con nombre.
+    #[cfg(target_os = "ios")]
+    let input = {
+        let mut input = input;
+        let named = match &input.logical_key {
+            Key::Character(c) if c == "\n" || c == "\r" => Some(NamedKey::Enter),
+            Key::Character(c) if c == "\t" => Some(NamedKey::Tab),
+            _ => None,
+        };
+        if let Some(named) = named {
+            input.logical_key = Key::Named(named);
+        }
+        input
+    };
+
     // Ignore any synthetic keypresses that winit generated for keys that were
     // already pressed when a window gained focus.  Three examples of how these
     // cause problems:
