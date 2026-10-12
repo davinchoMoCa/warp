@@ -19,6 +19,13 @@ use crate::terminal::{SizeInfo, TerminalModel};
 
 const CREATE_SESSION_ENDPOINT: &str = "ws://127.0.0.1:3030/create";
 
+/// moca: URL del proxy de PTY remota (p. ej. `ws://<xps>:3030/create`); por defecto
+/// [`CREATE_SESSION_ENDPOINT`]. La dirección real no va en el código: el repo es público.
+const MOCA_ENDPOINT_ENV: &str = "MOCA_REMOTE_TTY_URL";
+
+/// moca: token compartido con el proxy, que da acceso a un shell y no debe quedar abierto.
+const MOCA_TOKEN_ENV: &str = "MOCA_REMOTE_TTY_TOKEN";
+
 /// Contains info needed to resize the SSH terminal session. Is serialized and
 /// sent over the websocket as text.
 ///
@@ -73,10 +80,14 @@ impl EventLoop {
     }
 
     fn get_new_session_url(size_info: SizeInfo) -> String {
-        let num_rows = size_info.rows;
-        let num_cols = size_info.columns;
-
-        format!("{CREATE_SESSION_ENDPOINT}?num_rows={num_rows}&num_cols={num_cols}")
+        let endpoint = std::env::var(MOCA_ENDPOINT_ENV).ok();
+        let token = std::env::var(MOCA_TOKEN_ENV).ok();
+        session_url(
+            endpoint.as_deref(),
+            token.as_deref(),
+            size_info.rows,
+            size_info.columns,
+        )
     }
 
     /// Starts tasks to listen to and write to the websocket.
@@ -233,3 +244,26 @@ impl EventLoop {
 impl Entity for EventLoop {
     type Event = ();
 }
+
+/// moca: arma la URL de `/create`; un endpoint o token vacío cuenta como ausente.
+fn session_url(
+    endpoint: Option<&str>,
+    token: Option<&str>,
+    num_rows: usize,
+    num_cols: usize,
+) -> String {
+    let endpoint = endpoint
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .unwrap_or(CREATE_SESSION_ENDPOINT);
+    let mut url = format!("{endpoint}?num_rows={num_rows}&num_cols={num_cols}");
+    if let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) {
+        url.push_str("&token=");
+        url.push_str(&urlencoding::encode(token));
+    }
+    url
+}
+
+#[cfg(test)]
+#[path = "event_loop_tests.rs"]
+mod tests;
