@@ -1937,7 +1937,10 @@ impl RootView {
                     if FeatureFlag::ForceLogin.is_enabled() {
                         // ForceLogin is true for Preview
                         AuthOnboardingState::Auth(workspace_args.into())
+                    // moca: ios — sin bienvenida en iPad: directo a la terminal (sus opciones se
+                    // cambian en Ajustes).
                     } else if FeatureFlag::AgentOnboarding.is_enabled()
+                        && !cfg!(target_os = "ios")
                         && !has_completed_local_onboarding(ctx)
                         && !workspace_args.workspace_setting.is_content_deep_link()
                     {
