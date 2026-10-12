@@ -357,7 +357,8 @@ impl platform::Delegate for AppDelegate {
         // TODO(wasm): Investigate implementing this by creating a <input> element
         // and calling `click` on it.
 
-        #[cfg(not(target_family = "wasm"))]
+        // moca: ios
+        #[cfg(not(any(target_family = "wasm", target_os = "ios")))]
         {
             // This callback is called either on the “File Picker” background thread or, if starting
             // that thread fails, on this thread. Wrap this type in order to make ownership work.
@@ -443,6 +444,20 @@ impl platform::Delegate for AppDelegate {
                     })));
             }
         }
+
+        // moca: ios
+        #[cfg(target_os = "ios")]
+        {
+            self.event_loop_proxy
+                .send_event(CustomEvent::UpdateUIApp(Box::new(move |app| {
+                    callback(
+                        Err(FilePickerError::DialogFailed(
+                            "no disponible en iOS".to_string(),
+                        )),
+                        app,
+                    );
+                })));
+        }
     }
 
     fn open_save_file_picker(
@@ -450,7 +465,8 @@ impl platform::Delegate for AppDelegate {
         callback: SaveFilePickerCallback,
         config: SaveFilePickerConfiguration,
     ) {
-        #[cfg(not(target_family = "wasm"))]
+        // moca: ios
+        #[cfg(not(any(target_family = "wasm", target_os = "ios")))]
         {
             let event_loop_proxy = self.event_loop_proxy.clone();
             std::thread::Builder::new()
@@ -481,6 +497,15 @@ impl platform::Delegate for AppDelegate {
                         callback(path, app);
                     })));
                 });
+        }
+
+        // moca: ios
+        #[cfg(target_os = "ios")]
+        {
+            self.event_loop_proxy
+                .send_event(CustomEvent::UpdateUIApp(Box::new(move |app| {
+                    callback(None, app);
+                })));
         }
     }
 

@@ -7,6 +7,9 @@ pub mod mac;
 pub mod wasm;
 #[cfg(target_os = "windows")]
 pub mod windows;
+// moca: ios
+#[cfg(target_os = "ios")]
+pub mod ios;
 
 pub mod headless;
 
@@ -20,6 +23,9 @@ pub mod current {
             pub use super::mac::*;
         } else if #[cfg(target_os = "windows")] {
             pub use super::windows::*;
+        // moca: ios
+        } else if #[cfg(target_os = "ios")] {
+            pub use super::ios::*;
         } else {
             pub use warpui_core::platform::test::*;
         }

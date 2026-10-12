@@ -306,17 +306,17 @@ mod loader {
 #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
 mod loader {
     use super::*;
-    #[cfg(not(target_family = "wasm"))]
-    use crate::fonts::FontInfo;
 
     #[cfg(not(target_family = "wasm"))]
     pub fn load_system_font(_font_family: &str) -> Result<FontFamily> {
         anyhow::bail!("have not yet implemented loading system fonts")
     }
 
+    // moca: ios — devuelve el mismo tipo que las otras plataformas nativas (antes un Vec, que no
+    // implementa `platform::LoadedSystemFonts`; ningún target nativo pasaba por aquí hasta iOS).
     #[cfg(not(target_family = "wasm"))]
-    pub fn load_all_system_fonts() -> Vec<(FontInfo, FontFamily)> {
-        vec![]
+    pub fn load_all_system_fonts() -> LoadedSystemFonts {
+        LoadedSystemFonts(vec![])
     }
 
     pub fn fallback_fonts(_family_name: &str, _properties: Properties) -> Result<Vec<FontHandle>> {

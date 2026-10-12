@@ -6,7 +6,8 @@ use winit::event::ElementState;
 #[cfg(windows)]
 use winit::keyboard::NativeKey;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-#[cfg(not(target_family = "wasm"))]
+// moca: ios
+#[cfg(not(any(target_family = "wasm", target_os = "ios")))]
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 
 use super::WindowState;
@@ -152,7 +153,8 @@ pub fn convert_keyboard_input_event(
     })
 }
 
-#[cfg(not(target_family = "wasm"))]
+// moca: ios
+#[cfg(not(any(target_family = "wasm", target_os = "ios")))]
 /// Returns the base key without any modifiers applied, or `None` if it cannot be determined.
 fn get_key_without_modifiers(input: &winit::event::KeyEvent) -> Option<String> {
     let unmodified = input.key_without_modifiers();
@@ -160,12 +162,14 @@ fn get_key_without_modifiers(input: &winit::event::KeyEvent) -> Option<String> {
     convert_key(unmodified_input).map(|k| k.to_string())
 }
 
-#[cfg(target_family = "wasm")]
+// moca: ios
+#[cfg(any(target_family = "wasm", target_os = "ios"))]
 fn get_key_without_modifiers(_input: &winit::event::KeyEvent) -> Option<String> {
     None
 }
 
-#[cfg(not(target_family = "wasm"))]
+// moca: ios
+#[cfg(not(any(target_family = "wasm", target_os = "ios")))]
 /// Returns the text of the [`winit::event::KeyEvent`] with the characters modified by `ctrl`.
 /// For example,  `Ctrl+a` produces `Some("\x01")`.
 fn text_with_modifiers(
@@ -175,7 +179,8 @@ fn text_with_modifiers(
     key_event.text_with_all_modifiers()
 }
 
-#[cfg(target_family = "wasm")]
+// moca: ios
+#[cfg(any(target_family = "wasm", target_os = "ios"))]
 fn text_with_modifiers(
     key_event: &winit::event::KeyEvent,
     modifier_state: ModifiersState,
