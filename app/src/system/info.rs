@@ -99,8 +99,8 @@ impl SystemInfo {
     pub fn used_memory(&self) -> Byte {
         self.system
             .process(Self::current_pid())
-            .expect("current process should exist")
-            .memory()
+            // moca: ios — el sandbox no deja leer la tabla de procesos; sin dato, 0.
+            .map_or(0, |process| process.memory())
             .into()
     }
 
@@ -121,8 +121,8 @@ impl SystemInfo {
         let total_usage = self
             .system
             .process(Self::current_pid())
-            .expect("current process should exist")
-            .cpu_usage();
+            // moca: ios — el sandbox no deja leer la tabla de procesos; sin dato, 0.
+            .map_or(0., |process| process.cpu_usage());
         total_usage / 100.
     }
 

@@ -18,3 +18,8 @@ warpui_core.workspace = true
 # Make sure we embed the data into the wasm binary even when running in debug
 # mode, as it cannot be read directly from the filesystem.
 rust-embed = { workspace = true, features = ["debug-embed"] }
+
+# moca: ios — en debug rust-embed lee los archivos del disco de la Mac (ruta del repo), que en el
+# iPad no existe: incrustarlos siempre en el binario.
+[target.'cfg(target_os = "ios")'.dependencies]
+rust-embed = { workspace = true, features = ["debug-embed"] }

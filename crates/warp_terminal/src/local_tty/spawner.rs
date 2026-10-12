@@ -131,7 +131,10 @@ impl PtySpawner {
     /// that could leak into forked subprocesses (e.g.: file descriptors).
     pub fn new() -> Result<Self> {
         cfg_if::cfg_if! {
-            if #[cfg(unix)] {
+            // moca: ios — iOS prohíbe lanzar procesos; sin servidor de PTY (la terminal es remota).
+            if #[cfg(target_os = "ios")] {
+                Ok(Self { server: None })
+            } else if #[cfg(unix)] {
                 let server = super::server::TerminalServer::new()?;
                 Ok(Self {
                     server: Some(server),

@@ -287,7 +287,8 @@ fn init_platform_native_preferences() -> user_preferences::Model {
     cfg_if::cfg_if! {
         if #[cfg(test)] {
             Box::<user_preferences::in_memory::InMemoryPreferences>::default()
-        } else if #[cfg(any(target_os = "linux", target_os = "freebsd", feature = "integration_tests"))] {
+        // moca: ios — preferencias en archivo, como Linux.
+        } else if #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "ios", feature = "integration_tests"))] {
             match user_preferences::file_backed::FileBackedUserPreferences::new(super::user_preferences_file_path()) {
                 Ok(prefs) => Box::new(prefs) as user_preferences::Model,
                 Err(err) => {

@@ -700,7 +700,8 @@ pub fn log_directory() -> Result<std::path::PathBuf> {
 
 fn init_log_directory() -> Result<std::path::PathBuf> {
     cfg_if::cfg_if! {
-        if #[cfg(target_os = "macos")] {
+        // moca: ios — en iOS el home es el contenedor de la app; Library/Logs existe ahí.
+        if #[cfg(any(target_os = "macos", target_os = "ios"))] {
             Ok(dirs::home_dir()
                 .ok_or_else(|| {
                     anyhow::anyhow!("could not locate home directory in order to create a log file")
