@@ -37,7 +37,7 @@ export IPHONEOS_DEPLOYMENT_TARGET=17.0
 echo "==> Compilando Warp para iOS ($PROFILE_DIR)"
 [ -f ~/.cargo/env ] && source ~/.cargo/env
 cargo build -p warp --bin warp-oss --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} \
-    --no-default-features --features gui,remote_tty
+    --features gui,remote_tty
 
 echo "==> Empaquetando $APP"
 rm -rf "$APP"

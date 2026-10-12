@@ -1188,6 +1188,11 @@ impl Window {
     }
 
     fn set_bounds(&self, bounds: RectF) {
+        // moca: ios — la ventana ocupa toda la pantalla; restaurar tamaños guardados la achica.
+        if cfg!(target_os = "ios") {
+            let _ = bounds;
+            return;
+        }
         if let Some(Inner { window, .. }) = self.inner.borrow().as_ref() {
             let origin = bounds.origin();
             window.set_outer_position(LogicalPosition::new(origin.x(), origin.y()));
@@ -1373,7 +1378,11 @@ fn create_window(
         }
     }
 
-    let (size, origin) = if tiling_window_manager && window_options.style != WindowStyle::Pin {
+    // moca: ios — en iOS la ventana es siempre la pantalla completa: como con un gestor de
+    // ventanas en mosaico, no se pide tamaño ni posición y decide el sistema.
+    let (size, origin) = if cfg!(target_os = "ios")
+        || (tiling_window_manager && window_options.style != WindowStyle::Pin)
+    {
         (None, None)
     } else {
         match window_bounds {
