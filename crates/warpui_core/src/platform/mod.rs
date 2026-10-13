@@ -701,7 +701,8 @@ impl OperatingSystem {
                 wasm::current_platform()
             } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
                 OperatingSystem::Linux
-            } else if #[cfg(target_os = "macos")] {
+            } else if #[cfg(any(target_os = "macos", target_os = "ios"))] {
+                // moca: ios — el iPad se usa con teclado de Apple: atajos con ⌘, como en la Mac.
                 OperatingSystem::Mac
             } else if #[cfg(windows)] {
                 OperatingSystem::Windows

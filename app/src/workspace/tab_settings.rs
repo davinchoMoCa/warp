@@ -499,7 +499,9 @@ define_settings_group!(TabSettings, settings: [
     },
     use_vertical_tabs: UseVerticalTabs {
         type: bool,
-        default: false,
+        // moca: ios — sin bienvenida en iPad, nadie elige: pestañas verticales (con la línea de
+        // actividad y los subprocesos de cada terminal).
+        default: cfg!(target_os = "ios"),
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         surface: settings::SettingSurfaces::GUI,
@@ -509,7 +511,8 @@ define_settings_group!(TabSettings, settings: [
     },
     show_vertical_tab_panel_in_restored_windows: ShowVerticalTabPanelInRestoredWindows {
         type: bool,
-        default: false,
+        // moca: ios — al reabrir la app en el iPad, la barra de terminales siempre visible.
+        default: cfg!(target_os = "ios"),
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         surface: settings::SettingSurfaces::GUI,

@@ -155,8 +155,11 @@ impl Inner {
 
     pub fn pre_present_notify(&self) {}
 
+    // moca: ios — el área interior es el marco de la vista (la zona segura, ver
+    // WinitView::layoutSubviews), que es exactamente lo que cubre la capa de Metal. Si no
+    // coinciden, la imagen se estira y los clics caen desalineados respecto de lo dibujado.
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
-        let safe_area = self.safe_area_screen_space();
+        let safe_area = self.view_frame();
         let position =
             LogicalPosition { x: safe_area.origin.x as f64, y: safe_area.origin.y as f64 };
         let scale_factor = self.scale_factor();
@@ -185,7 +188,7 @@ impl Inner {
 
     pub fn inner_size(&self) -> PhysicalSize<u32> {
         let scale_factor = self.scale_factor();
-        let safe_area = self.safe_area_screen_space();
+        let safe_area = self.view_frame();
         let size = LogicalSize {
             width: safe_area.size.width as f64,
             height: safe_area.size.height as f64,
@@ -655,6 +658,11 @@ impl Inner {
 }
 
 impl Inner {
+    /// moca: ios — marco de la vista de dibujo en coordenadas de pantalla.
+    fn view_frame(&self) -> CGRect {
+        self.rect_to_screen_space(self.view.frame())
+    }
+
     fn screen_frame(&self) -> CGRect {
         self.rect_to_screen_space(self.window.bounds())
     }
@@ -669,6 +677,7 @@ impl Inner {
         self.window.convertRect_fromCoordinateSpace(rect, &screen_space)
     }
 
+    #[allow(dead_code)] // moca: ios — ver inner_size
     fn safe_area_screen_space(&self) -> CGRect {
         let bounds = self.window.bounds();
         if app_state::os_capabilities().safe_area {

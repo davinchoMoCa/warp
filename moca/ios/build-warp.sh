@@ -68,6 +68,8 @@ cat > "$APP/Info.plist" <<EOF
     <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
     <key>UILaunchScreen</key><dict/>
     <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+    <key>UIViewControllerBasedStatusBarAppearance</key><false/>
+    <key>UIStatusBarStyle</key><string>UIStatusBarStyleLightContent</string>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
     <key>UISupportedInterfaceOrientations~ipad</key>
@@ -148,5 +150,5 @@ if [ -f "$CONFIG" ]; then
 fi
 echo "==> Abriendo"
 xcrun devicectl device process launch --device "$DEVICE" --terminate-existing \
-    --environment-variables "$ENV_JSON" "$BUNDLE_ID"
+    --environment-variables "$ENV_JSON" ${MOCA_CONSOLE:+--console} "$BUNDLE_ID"
 echo "Listo: Moca Warp β en el iPad."

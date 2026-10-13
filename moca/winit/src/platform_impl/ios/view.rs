@@ -3,10 +3,12 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
-use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
+use objc2::{
+    class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass,
+};
 use objc2_foundation::{CGFloat, CGPoint, CGRect, MainThreadMarker, NSObject, NSSet, NSString};
 use objc2_ui_kit::{
-    UICoordinateSpace, UIEvent, UIForceTouchCapability, UIGestureRecognizer,
+    UICoordinateSpace, UIEvent, UIEventButtonMask, UIForceTouchCapability, UIGestureRecognizer,
     UIGestureRecognizerDelegate, UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput,
     UIPanGestureRecognizer, UIScrollTypeMask,
     UIPinchGestureRecognizer, UIPress, UIPressesEvent, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
@@ -18,7 +20,8 @@ use super::keyboard;
 use super::window::WinitUIWindow;
 use crate::dpi::PhysicalPosition;
 use crate::event::{
-    ElementState, Event, Force, KeyEvent, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+    ElementState, Event, Force, KeyEvent, MouseButton, MouseScrollDelta, Touch, TouchPhase,
+    WindowEvent,
 };
 use crate::keyboard::{
     Key, KeyCode, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
@@ -46,6 +49,8 @@ pub struct WinitViewState {
     // moca: ios — teclado físico: modificadores vigentes y tecla que se repite al mantenerla.
     modifiers: Cell<ModifiersState>,
     repeating_key: RefCell<Option<(isize, KeyEvent)>>,
+    // moca: ios — botón del puntero que está pulsado (el de Began; en Ended ya no se informa).
+    pointer_button: Cell<Option<MouseButton>>,
 }
 
 /// moca: ios — retardo antes de repetir una tecla mantenida y ritmo de repetición (segundos).
@@ -87,7 +92,27 @@ declare_class!(
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
 
             let window = self.window().unwrap();
-            let window_bounds = window.bounds();
+            // moca: ios — la vista ocupa solo la zona segura: nada queda bajo la barra de estado
+            // (hora, wifi, batería) ni bajo el indicador de inicio. Lo de alrededor es la
+            // ventana, en negro.
+            let window_bounds = {
+                let bounds = window.bounds();
+                let insets = window.safeAreaInsets();
+                CGRect {
+                    origin: CGPoint {
+                        x: bounds.origin.x + insets.left,
+                        y: bounds.origin.y + insets.top,
+                    },
+                    size: objc2_foundation::CGSize {
+                        width: bounds.size.width - insets.left - insets.right,
+                        height: bounds.size.height - insets.top - insets.bottom,
+                    },
+                }
+            };
+            unsafe {
+                let black: Retained<AnyObject> = msg_send_id![class!(UIColor), blackColor];
+                let _: () = msg_send![&window, setBackgroundColor: &*black];
+            }
             let screen = window.screen();
             let screen_space = screen.coordinateSpace();
             let screen_frame = self.convertRect_toCoordinateSpace(window_bounds, &screen_space);
@@ -168,28 +193,28 @@ declare_class!(
         }
 
         #[method(touchesBegan:withEvent:)]
-        fn touches_began(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
+        fn touches_began(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
             // moca: ios — Warp activa botones según el hover; sin un CursorMoved previo, el
             // primer clic sobre un botón (o un toque) no "estaba encima" y se ignoraba.
             if let Some(touch) = unsafe { touches.anyObject() } {
                 self.send_cursor_moved(touch.locationInView(Some(self)));
             }
-            self.handle_touches(touches)
+            self.handle_touches(touches, event)
         }
 
         #[method(touchesMoved:withEvent:)]
-        fn touches_moved(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_moved(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(touchesEnded:withEvent:)]
-        fn touches_ended(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_ended(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(touchesCancelled:withEvent:)]
-        fn touches_cancelled(&self, touches: &NSSet<UITouch>, _event: Option<&UIEvent>) {
-            self.handle_touches(touches)
+        fn touches_cancelled(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
+            self.handle_touches(touches, event)
         }
 
         #[method(pinchGesture:)]
@@ -493,6 +518,7 @@ impl WinitView {
 
             modifiers: Cell::new(ModifiersState::empty()),
             repeating_key: RefCell::new(None),
+            pointer_button: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
@@ -639,6 +665,35 @@ impl WinitView {
         );
     }
 
+    /// moca: ios — clic del puntero indirecto como `MouseInput` (más `CursorMoved`).
+    fn handle_pointer_click(&self, touch: &UITouch, event: Option<&UIEvent>) {
+        self.send_cursor_moved(touch.locationInView(Some(self)));
+        let (state, button) = match touch.phase() {
+            UITouchPhase::Began => {
+                let secondary = event.is_some_and(|event| {
+                    unsafe { event.buttonMask() }.contains(UIEventButtonMask::Secondary)
+                });
+                let button = if secondary { MouseButton::Right } else { MouseButton::Left };
+                self.ivars().pointer_button.set(Some(button));
+                (ElementState::Pressed, button)
+            }
+            UITouchPhase::Ended | UITouchPhase::Cancelled => {
+                let Some(button) = self.ivars().pointer_button.take() else { return };
+                (ElementState::Released, button)
+            }
+            _ => return,
+        };
+        let Some(window) = self.window() else { return };
+        let mtm = MainThreadMarker::new().unwrap();
+        app_state::handle_nonuser_event(
+            mtm,
+            EventWrapper::StaticEvent(Event::WindowEvent {
+                window_id: RootWindowId(window.id()),
+                event: WindowEvent::MouseInput { device_id: DEVICE_ID, state, button },
+            }),
+        );
+    }
+
     /// moca: ios — reconocedores del puntero indirecto (trackpad/ratón del Magic Keyboard).
     fn install_pointer_recognizers(&self) {
         let mtm = MainThreadMarker::from(self);
@@ -776,12 +831,19 @@ impl WinitView {
         }
     }
 
-    fn handle_touches(&self, touches: &NSSet<UITouch>) {
+    fn handle_touches(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>) {
         let window = self.window().unwrap();
         let mut touch_events = Vec::new();
         let os_supports_force = app_state::os_capabilities().force_touch;
         for touch in touches {
-            let logical_location = touch.locationInView(None);
+            // moca: ios — el clic del trackpad/ratón es un ratón, no un dedo: arrastrar
+            // selecciona (en vez de desplazar) y el clic secundario abre el menú contextual.
+            if touch.r#type() == UITouchType::IndirectPointer {
+                self.handle_pointer_click(&touch, event);
+                continue;
+            }
+            // moca: ios — relativo a la vista (que ya no empieza en el origen de la ventana).
+            let logical_location = touch.locationInView(Some(self));
             let touch_type = touch.r#type();
             let force = if os_supports_force {
                 let trait_collection = self.traitCollection();

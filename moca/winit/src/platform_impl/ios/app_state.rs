@@ -848,6 +848,7 @@ macro_rules! os_capabilities {
         $(,)*
     ) => {
         #[derive(Clone, Debug)]
+        #[allow(dead_code)] // moca: ios — `safe_area` ya no se usa (ver Inner::inner_size)
         pub struct OSCapabilities {
             $(
                 pub $name: bool,
