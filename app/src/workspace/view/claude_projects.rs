@@ -1,7 +1,7 @@
 //! moca: tablero "Proyectos". Tarjetas por proyecto (carpeta) agrupadas por cliente, leídas
 //! directo de `~/.claude`. Clic en una tarjeta retoma la última sesión de ese proyecto en una
-//! pestaña nueva; "+ Nueva" abre `claude` limpio en la carpeta. Reemplaza el área de la
-//! terminal mientras está abierto, como la vista de agentes de Warp.
+//! pestaña nueva; "+ Nueva" abre `claude` limpio en la carpeta. Vive en la pestaña de inicio
+//! (la de "Get started" de Warp), que no abre ninguna terminal.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -49,7 +49,6 @@ pub enum ClaudeProjectsAction {
         dir: PathBuf,
     },
     SetStatus(StatusFilter),
-    Close,
 }
 
 pub enum Event {
@@ -59,7 +58,6 @@ pub enum Event {
         command: String,
         title: String,
     },
-    Close,
 }
 
 enum LoadState {
@@ -122,7 +120,6 @@ impl ClaudeProjectsView {
                 me.rebuild(ctx);
                 ctx.notify();
             }
-            EditorEvent::Escape => ctx.emit(Event::Close),
             EditorEvent::Enter => me.resume_first_match(ctx),
             _ => {}
         });
@@ -692,7 +689,6 @@ impl TypedActionView for ClaudeProjectsView {
                 self.rebuild(ctx);
                 ctx.notify();
             }
-            ClaudeProjectsAction::Close => ctx.emit(Event::Close),
         }
     }
 }
@@ -757,15 +753,6 @@ impl View for ClaudeProjectsView {
                 .finish(),
             );
         }
-        let close = ConstrainedBox::new(small_button(
-            "✕".to_string(),
-            self.mouse_states.button("close"),
-            ClaudeProjectsAction::Close,
-            false,
-            appearance,
-        ))
-        .with_width(34.)
-        .finish();
         let header = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -778,7 +765,6 @@ impl View for ClaudeProjectsView {
                     .with_spacing(10.)
                     .with_child(search)
                     .with_child(filters.finish())
-                    .with_child(close)
                     .finish(),
             )
             .finish();
@@ -853,7 +839,7 @@ impl View for ClaudeProjectsView {
                 body.add_child(
                     Container::new(
                         label(
-                            "Clic en un proyecto retoma su última sesión · Enter abre el primero · Esc cierra",
+                            "Clic en un proyecto retoma su última sesión · Enter abre el primero",
                             11.,
                             palette.sub,
                             appearance,

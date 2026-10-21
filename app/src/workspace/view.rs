@@ -302,7 +302,7 @@ use crate::notification::NotificationContext;
 use crate::palette::PaletteMode;
 #[cfg(feature = "local_fs")]
 use crate::pane_group::FilePane;
-use crate::pane_group::pane::ActionOrigin;
+use crate::pane_group::pane::{ActionOrigin, IPaneType};
 use crate::pane_group::{
     self, AIFactPane, AnyPaneContent, ChildAgentOrigin, CodeDiffPane, CodePane, CodeReviewPanelArg,
     CustomRouterEditorPane, Direction as PaneGroupDirection, Direction, EnvironmentManagementPane,
@@ -1203,9 +1203,6 @@ pub struct Workspace {
     right_panel_view: ViewHandle<RightPanelView>,
     working_directories_model: ModelHandle<pane_group::WorkingDirectoriesModel>,
     agent_management_view: ViewHandle<AgentManagementView>,
-    /// moca: tablero de proyectos de Claude; reemplaza el contenido mientras está abierto.
-    moca_claude_projects_view: ViewHandle<claude_projects::ClaudeProjectsView>,
-    moca_claude_projects_open: bool,
     notification_mailbox_view: Option<ViewHandle<NotificationMailboxView>>,
     notification_toast_stack: Option<ViewHandle<AgentNotificationToastStack>>,
     lightbox_view: Option<ViewHandle<LightboxView>>,
@@ -3161,26 +3158,6 @@ impl Workspace {
         ctx.subscribe_to_view(&agent_management_view, |me, _, event, ctx| {
             me.handle_agent_management_view_event(event, ctx);
         });
-        let moca_claude_projects_view =
-            ctx.add_typed_action_view(claude_projects::ClaudeProjectsView::new);
-        ctx.subscribe_to_view(
-            &moca_claude_projects_view,
-            |me, _, event, ctx| match event {
-                claude_projects::Event::OpenSession {
-                    cwd,
-                    command,
-                    title,
-                } => {
-                    me.moca_set_claude_projects_open(false, ctx);
-                    me.moca_open_claude_session(cwd.clone(), command, title.clone(), ctx);
-                }
-                claude_projects::Event::Close => {
-                    me.moca_set_claude_projects_open(false, ctx);
-                    me.focus_active_tab(ctx);
-                }
-            },
-        );
-
         let notification_mailbox_view = if FeatureFlag::HOANotifications.is_enabled() {
             let view = ctx.add_typed_action_view(NotificationMailboxView::new);
             ctx.subscribe_to_view(&view, move |me, _, event, ctx| match event {
@@ -3599,8 +3576,6 @@ impl Workspace {
             chatgpt_plan_modal: chatgpt_plan_view,
             enable_auto_reload_modal,
             agent_management_view,
-            moca_claude_projects_view,
-            moca_claude_projects_open: false,
             notification_mailbox_view,
             notification_toast_stack,
             codex_modal,
@@ -4465,6 +4440,9 @@ impl Workspace {
         let open_warp_drive = if !show_warp_home {
             if self.should_trigger_get_started_onboarding(ctx) {
                 self.trigger_get_started_onboarding(ctx);
+            } else if cfg!(not(target_os = "ios")) && shell.is_none() {
+                // moca: una ventana nueva arranca en Proyectos, sin terminales.
+                self.add_get_started_tab(ctx);
             } else {
                 self.add_new_session_tab_with_default_mode(
                     NewSessionSource::Window,
@@ -5543,7 +5521,6 @@ impl Workspace {
             if FeatureFlag::AgentManagementView.is_enabled() {
                 self.set_is_agent_management_view_open(false, ctx);
             }
-            self.moca_set_claude_projects_open(false, ctx);
 
             self.set_active_tab_index(index, ctx);
             self.focus_active_tab(ctx);
@@ -6837,25 +6814,33 @@ impl Workspace {
         }
     }
 
-    /// moca: abre o cierra el tablero de proyectos de Claude.
-    fn moca_set_claude_projects_open(&mut self, is_open: bool, ctx: &mut ViewContext<Self>) {
-        if self.moca_claude_projects_open == is_open {
-            return;
-        }
-        self.moca_claude_projects_open = is_open;
-        if is_open {
-            if FeatureFlag::AgentManagementView.is_enabled() {
-                self.set_is_agent_management_view_open(false, ctx);
-            }
-            ctx.focus(&self.moca_claude_projects_view);
-            self.moca_claude_projects_view.update(ctx, |view, ctx| {
-                view.on_opened(ctx);
-            });
-        }
-        ctx.notify();
+    /// moca: la pestaña Proyectos es la de "Get started" de Warp con el tablero adentro.
+    fn moca_is_projects_tab(&self, index: usize, ctx: &AppContext) -> bool {
+        self.tabs.get(index).is_some_and(|tab| {
+            let pane_group = tab.pane_group.as_ref(ctx);
+            pane_group.pane_count() == 1
+                && pane_group
+                    .pane_ids()
+                    .all(|pane_id| pane_id.pane_type() == IPaneType::GetStarted)
+        })
     }
 
-    fn moca_render_claude_projects_button(&self, appearance: &Appearance) -> Box<dyn Element> {
+    /// moca: va a la pestaña Proyectos; si no hay, la crea.
+    fn moca_show_projects_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        match (0..self.tabs.len()).find(|index| self.moca_is_projects_tab(*index, ctx)) {
+            Some(index) => {
+                self.activate_tab(index, ctx);
+                self.focus_active_tab(ctx);
+            }
+            None => self.add_get_started_tab(ctx),
+        }
+    }
+
+    fn moca_render_claude_projects_button(
+        &self,
+        appearance: &Appearance,
+        ctx: &AppContext,
+    ) -> Box<dyn Element> {
         Align::new(
             self.render_tab_bar_icon_button(
                 appearance,
@@ -6864,7 +6849,7 @@ impl Workspace {
                 WorkspaceAction::MocaToggleClaudeProjects,
                 "Proyectos".to_string(),
                 None,
-                self.moca_claude_projects_open,
+                self.moca_is_projects_tab(self.active_tab_index, ctx),
                 false,
             )
             .finish(),
@@ -12389,6 +12374,23 @@ impl Workspace {
         self.vertical_tabs_panel
             .clear_detail_sidecar_if_for_pane_group(pane_group.id());
 
+        // moca: al cerrar la última terminal se vuelve a Proyectos en vez de cerrar la
+        // ventana. Solo cerrar la pestaña Proyectos, si es la única, cierra la ventana.
+        // (Mover la última pestaña a otra ventana no pasa por aquí: no desarma paneles.)
+        if self.tabs.len() == 1 && detach_panes_for_close && !self.moca_is_projects_tab(index, ctx)
+        {
+            let closing_id = pane_group.id();
+            self.add_get_started_tab(ctx);
+            if let Some(index) = self
+                .tabs
+                .iter()
+                .position(|t| t.pane_group.id() == closing_id)
+            {
+                self.remove_tab(index, add_to_undo_stack, detach_panes_for_close, ctx);
+            }
+            return;
+        }
+
         // If this is the last tab, close the window instead of actually removing
         // the tab.
         if self.tabs.len() == 1 {
@@ -12594,7 +12596,8 @@ impl Workspace {
         add_to_undo_stack: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        let is_last_tab = self.tabs.len() == 1;
+        // moca: solo cerrar la pestaña Proyectos, si es la única, cierra la ventana.
+        let is_last_tab = self.tabs.len() == 1 && self.moca_is_projects_tab(index, ctx);
         if !ContextFlag::CloseWindow.is_enabled() && is_last_tab {
             return;
         }
@@ -21537,7 +21540,7 @@ impl Workspace {
             HeaderToolbarItemKind::TabsPanel => self.render_left_toggle_button(appearance, ctx),
             HeaderToolbarItemKind::ToolsPanel => {
                 // moca: el botón de Proyectos va junto al de herramientas.
-                let projects = self.moca_render_claude_projects_button(appearance);
+                let projects = self.moca_render_claude_projects_button(appearance, ctx);
                 if self.left_panel_views.is_empty() {
                     projects
                 } else {
@@ -22359,9 +22362,7 @@ impl Workspace {
     ) -> Box<dyn Element> {
         let active_tab_data = &self.tabs[self.active_tab_index];
 
-        let active_content = if self.moca_claude_projects_open {
-            ChildView::new(&self.moca_claude_projects_view).finish()
-        } else if FeatureFlag::AgentManagementView.is_enabled()
+        let active_content = if FeatureFlag::AgentManagementView.is_enabled()
             && self.current_workspace_state.is_agent_management_view_open
         {
             ChildView::new(&self.agent_management_view).finish()
@@ -25238,13 +25239,12 @@ impl TypedActionView for Workspace {
                 );
                 ctx.notify();
             }
-            MocaToggleClaudeProjects => {
-                let is_open = !self.moca_claude_projects_open;
-                self.moca_set_claude_projects_open(is_open, ctx);
-                if !is_open {
-                    self.focus_active_tab(ctx);
-                }
-            }
+            MocaToggleClaudeProjects => self.moca_show_projects_tab(ctx),
+            MocaOpenClaudeSession {
+                cwd,
+                command,
+                title,
+            } => self.moca_open_claude_session(cwd.clone(), command, title.clone(), ctx),
             ToggleAgentManagementView => {
                 if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
                     && FeatureFlag::AgentManagementView.is_enabled()

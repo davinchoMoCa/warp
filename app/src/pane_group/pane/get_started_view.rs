@@ -24,6 +24,7 @@ use crate::pane_group::{BackingView, PaneConfiguration, PaneEvent};
 use crate::terminal::TerminalView;
 use crate::util::bindings::{BindingGroup, CustomAction, keybinding_name_to_display_string};
 use crate::view_components::DismissibleToast;
+use crate::workspace::view::claude_projects::{ClaudeProjectsView, Event as ClaudeProjectsEvent};
 use crate::workspace::{ToastStack, Workspace, WorkspaceAction};
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
 
@@ -51,16 +52,34 @@ enum ActivePage {
 pub struct GetStartedView {
     pane_configuration: ModelHandle<PaneConfiguration>,
     focus_handle: Option<PaneFocusHandle>,
+    // moca: la bienvenida de Warp queda reemplazada por Proyectos (se conserva para mezclar
+    // cambios de upstream sin conflictos).
+    #[allow(dead_code)]
     project_buttons: ViewHandle<ProjectButtons>,
     create_project_view: ViewHandle<CreateProjectView>,
     clone_repo_view: ViewHandle<CloneRepoView>,
     active_page: ActivePage,
+    #[allow(dead_code)]
     terminal_session_button: MouseStateHandle,
+    /// moca: esta pestaña es el tablero de Proyectos de Claude (el inicio sin terminales).
+    moca_projects: ViewHandle<ClaudeProjectsView>,
 }
 
 impl GetStartedView {
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
-        let pane_configuration = ctx.add_model(|_ctx| PaneConfiguration::new("Get started"));
+        let pane_configuration = ctx.add_model(|_ctx| PaneConfiguration::new("Proyectos"));
+        let moca_projects = ctx.add_typed_action_view(ClaudeProjectsView::new);
+        ctx.subscribe_to_view(&moca_projects, |_, _, event, ctx| match event {
+            ClaudeProjectsEvent::OpenSession {
+                cwd,
+                command,
+                title,
+            } => ctx.dispatch_typed_action(&WorkspaceAction::MocaOpenClaudeSession {
+                cwd: cwd.clone(),
+                command: command.clone(),
+                title: title.clone(),
+            }),
+        });
         let project_buttons = ctx.add_typed_action_view(ProjectButtons::new);
         ctx.subscribe_to_view(&project_buttons, Self::handle_project_buttons_event);
 
@@ -79,6 +98,7 @@ impl GetStartedView {
             clone_repo_view,
             active_page: Default::default(),
             terminal_session_button: Default::default(),
+            moca_projects,
         }
     }
 
@@ -184,6 +204,7 @@ impl GetStartedView {
         self.close(ctx);
     }
 
+    #[allow(dead_code)]
     fn render_main_content(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
@@ -326,8 +347,9 @@ impl View for GetStartedView {
         "GetStartedView"
     }
 
-    fn render(&self, app: &AppContext) -> Box<dyn Element> {
-        Align::new(self.render_main_content(app)).finish()
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        // moca: el tablero de Proyectos reemplaza la bienvenida de Warp.
+        ChildView::new(&self.moca_projects).finish()
     }
 }
 
@@ -349,11 +371,9 @@ impl BackingView for GetStartedView {
     }
 
     fn focus_contents(&mut self, ctx: &mut ViewContext<Self>) {
-        match self.active_page {
-            ActivePage::CreateProject => ctx.focus(&self.create_project_view),
-            ActivePage::CloneRepo => ctx.focus(&self.clone_repo_view),
-            ActivePage::Main => ctx.focus(&self.project_buttons),
-        }
+        // moca: al volver a la pestaña se enfoca el buscador y se releen las sesiones.
+        self.moca_projects
+            .update(ctx, |projects, ctx| projects.on_opened(ctx));
     }
 
     fn render_header_content(
@@ -361,7 +381,7 @@ impl BackingView for GetStartedView {
         _ctx: &view::HeaderRenderContext<'_>,
         _app: &AppContext,
     ) -> view::HeaderContent {
-        view::HeaderContent::simple("Get started")
+        view::HeaderContent::simple("Proyectos")
     }
 
     fn set_focus_handle(&mut self, focus_handle: PaneFocusHandle, _ctx: &mut ViewContext<Self>) {

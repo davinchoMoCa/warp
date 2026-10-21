@@ -781,8 +781,14 @@ pub enum WorkspaceAction {
         select_first: bool,
     },
     ToggleAgentManagementView,
-    /// moca: abre o cierra el tablero de proyectos de Claude.
+    /// moca: va a la pestaña Proyectos (la crea si no existe).
     MocaToggleClaudeProjects,
+    /// moca: abre una pestaña en `cwd` que corre `command` (sesión de Claude).
+    MocaOpenClaudeSession {
+        cwd: std::path::PathBuf,
+        command: String,
+        title: String,
+    },
     ViewAgentRunsForEnvironment {
         environment_id: String,
     },
@@ -1183,6 +1189,7 @@ impl WorkspaceAction {
             | ToggleNotificationMailbox { .. }
             | ToggleAgentManagementView
             | MocaToggleClaudeProjects
+            | MocaOpenClaudeSession { .. }
             | OpenAgentManagementView
             | ViewAgentRunsForEnvironment { .. }
             | ToggleAIDocumentPane { .. }
