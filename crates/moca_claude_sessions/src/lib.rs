@@ -6,11 +6,27 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use serde::Deserialize;
 
+/// Dónde se ubica una sesión en el tablero de proyectos.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// Se abrió dentro de la carpeta del proyecto.
+    Opened,
+    /// Se abrió desde `~` o desde la raíz de un cliente; el proyecto se dedujo de las rutas
+    /// que tocó.
+    Inferred,
+    /// Se abrió desde `~` o desde la raíz de un cliente y no tocó un proyecto claro.
+    Unassigned,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaudeSession {
     pub id: String,
     pub title: String,
+    /// Carpeta donde se abrió: `claude --resume` tiene que correr aquí.
     pub cwd: PathBuf,
+    /// Carpeta del proyecto para agrupar (igual a `cwd` salvo en las huérfanas).
+    pub project_dir: PathBuf,
+    pub placement: Placement,
     pub last_activity: Option<NaiveDateTime>,
     pub messages: u32,
     pub active: bool,
@@ -47,7 +63,9 @@ pub fn parse_sessions_json(json: &str) -> Result<Vec<ClaudeSession>, serde_json:
         .map(|s| ClaudeSession {
             id: s.id,
             title: s.titulo.unwrap_or_else(|| "(sin título)".to_string()),
-            cwd: PathBuf::from(s.carpeta.unwrap_or_default()),
+            cwd: PathBuf::from(s.carpeta.clone().unwrap_or_default()),
+            project_dir: PathBuf::from(s.carpeta.unwrap_or_default()),
+            placement: Placement::Opened,
             last_activity: s.ultima.as_deref().and_then(parse_datetime),
             messages: s.mensajes.unwrap_or(0),
             active: s.activa.unwrap_or(false),
@@ -289,6 +307,8 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             cwd: PathBuf::from(cwd),
+            project_dir: PathBuf::from(cwd),
+            placement: Placement::Opened,
             last_activity: ultima.map(dt),
             messages: 10,
             active: false,
