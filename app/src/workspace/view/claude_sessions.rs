@@ -350,12 +350,19 @@ fn render_session(
         title = title.with_single_highlight(highlight, highlight_indices.to_vec());
     }
 
-    let top_row = Flex::row()
-        .with_main_axis_size(MainAxisSize::Max)
+    // Punto y título a la izquierda; el "hace X" alineado a la derecha.
+    let dot_and_title = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(8.)
         .with_child(dot)
         .with_child(Shrinkable::new(1.0, title.finish()).finish())
+        .finish();
+    let top_row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(8.)
+        .with_child(Shrinkable::new(1.0, dot_and_title).finish())
         .with_child(
             Text::new_inline(
                 relative_time(session.last_activity, now),
