@@ -57,6 +57,9 @@ use crate::util::openable_file_type::{
     EditorLayout, is_markdown_file, resolve_file_target_with_editor_choice,
 };
 use crate::workspace::WorkspaceAction;
+use crate::workspace::view::claude_sessions::{
+    ClaudeSessionsView, Event as ClaudeSessionsViewEvent,
+};
 use crate::workspace::view::conversation_list::view::{
     ConversationListView, Event as ConversationListViewEvent,
 };
@@ -77,6 +80,7 @@ struct MouseStateHandles {
     conversation_list_view_button: MouseStateHandle,
     global_search_button: MouseStateHandle,
     warp_drive_button: MouseStateHandle,
+    claude_sessions_button: MouseStateHandle,
     sign_in_button: MouseStateHandle,
 }
 
@@ -86,6 +90,8 @@ pub enum LeftPanelAction {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     WarpDrive,
     ConversationListView,
+    // moca: sesiones de Claude Code
+    ClaudeSessions,
     SignIn,
 }
 
@@ -99,9 +105,9 @@ pub(crate) enum ToolPanelAvailability {
 impl ToolPanelView {
     fn availability(self, app: &AppContext) -> ToolPanelAvailability {
         match self {
-            ToolPanelView::ProjectExplorer | ToolPanelView::GlobalSearch { .. } => {
-                ToolPanelAvailability::Available
-            }
+            ToolPanelView::ProjectExplorer
+            | ToolPanelView::GlobalSearch { .. }
+            | ToolPanelView::ClaudeSessions => ToolPanelAvailability::Available,
             ToolPanelView::WarpDrive => {
                 if WarpDriveSettings::is_warp_drive_available(app) {
                     ToolPanelAvailability::Available
@@ -143,6 +149,12 @@ pub enum LeftPanelEvent {
         terminal_view_id: Option<warpui::EntityId>,
     },
     SignInRequested,
+    /// moca: abrir una sesión de Claude en una pestaña nueva.
+    OpenClaudeSession {
+        cwd: PathBuf,
+        command: String,
+        title: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,6 +163,8 @@ pub enum ToolPanelView {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     WarpDrive,
     ConversationListView,
+    // moca: sesiones de Claude Code
+    ClaudeSessions,
 }
 
 /// Encapsulates the active view state to enforce that all mutations go through
@@ -218,6 +232,7 @@ pub struct LeftPanelView {
     close_button_mouse_state: MouseStateHandle,
     warp_drive_view: ViewHandle<DrivePanel>,
     conversation_list_view: ViewHandle<ConversationListView>,
+    claude_sessions_view: ViewHandle<ClaudeSessionsView>,
     active_view: active_view_state::ActiveViewState,
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
@@ -270,11 +285,14 @@ impl LeftPanelView {
             (
                 ToolPanelView::ProjectExplorer
                 | ToolPanelView::GlobalSearch { .. }
-                | ToolPanelView::WarpDrive,
+                | ToolPanelView::WarpDrive
+                | ToolPanelView::ClaudeSessions,
                 ToolPanelAvailability::RequiresAi,
             )
             | (
-                ToolPanelView::ProjectExplorer | ToolPanelView::GlobalSearch { .. },
+                ToolPanelView::ProjectExplorer
+                | ToolPanelView::GlobalSearch { .. }
+                | ToolPanelView::ClaudeSessions,
                 ToolPanelAvailability::RequiresAccount,
             )
             | (_, ToolPanelAvailability::Available) => {
@@ -363,6 +381,20 @@ impl LeftPanelView {
         };
         let warp_drive_view = ctx.add_typed_action_view(DrivePanel::new);
         let conversation_list_view = ctx.add_typed_action_view(ConversationListView::new);
+        let claude_sessions_view = ctx.add_typed_action_view(ClaudeSessionsView::new);
+        ctx.subscribe_to_view(&claude_sessions_view, |_me, _, event, ctx| match event {
+            ClaudeSessionsViewEvent::OpenSession {
+                cwd,
+                command,
+                title,
+            } => {
+                ctx.emit(LeftPanelEvent::OpenClaudeSession {
+                    cwd: cwd.clone(),
+                    command: command.clone(),
+                    title: title.clone(),
+                });
+            }
+        });
 
         ctx.subscribe_to_view(&warp_drive_view, |_me, _, event, ctx| {
             ctx.emit(LeftPanelEvent::WarpDrive(event.clone()));
@@ -478,6 +510,7 @@ impl LeftPanelView {
             close_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
+            claude_sessions_view,
             active_view: active_view_state::new(active_view),
             toolbelt_buttons,
             active_pane_group: None,
@@ -620,6 +653,15 @@ impl LeftPanelView {
                     tooltip_keybinding_names,
                 }
             }
+            ToolPanelView::ClaudeSessions => ToolbeltButtonConfig {
+                icon: Icon::ClaudeLogo,
+                active_icon: None,
+                tooltip_text: "Sesiones de Claude".to_string(),
+                action: LeftPanelAction::ClaudeSessions,
+                render_with_active_state: false,
+                tooltip_keybinding: None,
+                tooltip_keybinding_names: Vec::new(),
+            },
         }
     }
 
@@ -884,6 +926,11 @@ impl LeftPanelView {
                     view.on_left_panel_focused(ctx);
                 });
             }
+            ToolPanelView::ClaudeSessions => {
+                self.claude_sessions_view.update(ctx, |view, ctx| {
+                    view.on_left_panel_focused(ctx);
+                });
+            }
         }
     }
 
@@ -1050,6 +1097,9 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
+                LeftPanelAction::ClaudeSessions => {
+                    self.active_view.get() == ToolPanelView::ClaudeSessions
+                }
                 LeftPanelAction::SignIn => false,
             };
         }
@@ -1196,6 +1246,12 @@ impl LeftPanelView {
                     send_telemetry_from_ctx!(TelemetryEvent::ConversationListViewOpened, ctx);
                 }
             }
+            LeftPanelAction::ClaudeSessions => {
+                active_view_state::set(self, ToolPanelView::ClaudeSessions, ctx);
+                self.claude_sessions_view.update(ctx, |view, ctx| {
+                    view.refresh(ctx);
+                });
+            }
             LeftPanelAction::SignIn => {
                 ctx.emit(LeftPanelEvent::SignInRequested);
             }
@@ -1304,6 +1360,7 @@ impl View for LeftPanelView {
                 }
                 ToolPanelView::WarpDrive => ctx.focus(&self.warp_drive_view),
                 ToolPanelView::ConversationListView => ctx.focus(&self.conversation_list_view),
+                ToolPanelView::ClaudeSessions => ctx.focus(&self.claude_sessions_view),
             }
         }
     }
@@ -1318,6 +1375,7 @@ impl View for LeftPanelView {
                 .clone(),
             self.mouse_state_handles.global_search_button.clone(),
             self.mouse_state_handles.warp_drive_button.clone(),
+            self.mouse_state_handles.claude_sessions_button.clone(),
         ];
 
         // If there is only one button in the toolbelt row,
@@ -1380,6 +1438,10 @@ impl View for LeftPanelView {
                 .finish(),
                 ToolPanelView::ConversationListView => {
                     Shrinkable::new(1.0, ChildView::new(&self.conversation_list_view).finish())
+                        .finish()
+                }
+                ToolPanelView::ClaudeSessions => {
+                    Shrinkable::new(1.0, ChildView::new(&self.claude_sessions_view).finish())
                         .finish()
                 }
             }

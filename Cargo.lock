@@ -8529,6 +8529,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "moca_claude_sessions"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mockall"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15377,6 +15386,7 @@ dependencies = [
  "mime_guess",
  "minidumper",
  "mio",
+ "moca_claude_sessions",
  "mockall",
  "mockito",
  "natural_language_detection",

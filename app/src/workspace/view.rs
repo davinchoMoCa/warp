@@ -2,6 +2,8 @@ pub(crate) mod agent_cli_launch_modal;
 pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
 pub(crate) mod chatgpt_plan_modal;
+// moca: panel de sesiones de Claude Code
+pub(crate) mod claude_sessions;
 pub(crate) mod cloud_agent_capacity_modal;
 pub(crate) mod codex_modal;
 pub mod conversation_list;
@@ -285,7 +287,7 @@ use crate::editor::{
 use crate::env_vars::CloudEnvVarCollection;
 use crate::env_vars::manager::{EnvVarCollectionManager, EnvVarCollectionSource};
 use crate::experiments::{BlockOnboarding, Experiment};
-use crate::launch_configs::launch_config::WindowTemplate;
+use crate::launch_configs::launch_config::{PaneMode, PaneTemplateType, WindowTemplate};
 use crate::launch_configs::save_modal::{LaunchConfigModalEvent, LaunchConfigSaveModal};
 use crate::menu::{
     Event as MenuEvent, MENU_VERTICAL_PADDING, Menu, MenuItem, MenuItemFields, MenuSelectionSource,
@@ -4391,6 +4393,7 @@ impl Workspace {
                 },
                 LeftPanelDisplayedTab::WarpDrive => ToolPanelView::WarpDrive,
                 LeftPanelDisplayedTab::ConversationListView => ToolPanelView::ConversationListView,
+                LeftPanelDisplayedTab::ClaudeSessions => ToolPanelView::ClaudeSessions,
             };
             lp.restore_active_view_from_snapshot(active_view, ctx);
             lp.set_active_pane_group(pane_group.clone(), &self.working_directories_model, ctx);
@@ -6798,7 +6801,36 @@ impl Workspace {
                     modal.start_sign_in(ctx);
                 });
             }
+            LeftPanelEvent::OpenClaudeSession {
+                cwd,
+                command,
+                title,
+            } => {
+                self.moca_open_claude_session(cwd.clone(), command, title.clone(), ctx);
+            }
         }
+    }
+
+    /// moca: abre una pestaña nueva en `cwd` que corre `command` (`claude --resume <id>`).
+    fn moca_open_claude_session(
+        &mut self,
+        cwd: PathBuf,
+        command: &str,
+        title: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.add_tab_with_pane_layout(
+            PanesLayout::Template(PaneTemplateType::PaneTemplate {
+                cwd,
+                commands: vec![command.into()],
+                is_focused: Some(true),
+                pane_mode: PaneMode::Terminal,
+                shell: None,
+            }),
+            Arc::new(HashMap::new()),
+            Some(title),
+            ctx,
+        );
     }
 
     fn handle_right_panel_event(&mut self, event: RightPanelEvent, ctx: &mut ViewContext<Self>) {
@@ -20746,6 +20778,7 @@ impl Workspace {
                         ToolPanelView::GlobalSearch { .. } => "Global search",
                         ToolPanelView::WarpDrive => "Warp Drive",
                         ToolPanelView::ConversationListView => "Agent conversations",
+                        ToolPanelView::ClaudeSessions => "Sesiones de Claude",
                     }
                 } else {
                     "Tools panel"
@@ -20800,6 +20833,7 @@ impl Workspace {
                 ToolPanelView::GlobalSearch { .. } => "Global search",
                 ToolPanelView::WarpDrive => "Warp Drive",
                 ToolPanelView::ConversationListView => "Agent conversations",
+                ToolPanelView::ClaudeSessions => "Sesiones de Claude",
             }
         } else {
             "Tools panel"
@@ -23998,6 +24032,10 @@ impl Workspace {
         let mut views = vec![];
         if cfg!(feature = "local_fs") && *CodeSettings::as_ref(ctx).show_project_explorer.value() {
             views.push(ToolPanelView::ProjectExplorer);
+        }
+        // moca: sesiones de Claude Code (lee las de esta máquina; en el navegador no hay).
+        if cfg!(feature = "local_fs") {
+            views.push(ToolPanelView::ClaudeSessions);
         }
         if FeatureFlag::AgentViewConversationListView.is_enabled()
             && *AISettings::as_ref(ctx).show_conversation_history
