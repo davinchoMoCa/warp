@@ -1,13 +1,14 @@
 //! moca: panel "Sesiones de Claude". Lista las sesiones de Claude Code de esta máquina
-//! (salida de `sesiones-claude --json`), agrupadas por cliente, y abre cada una en una
-//! pestaña nueva con `claude --resume <id>` en su carpeta.
+//! (leídas directo de `~/.claude`), agrupadas por cliente, y abre cada una en una pestaña
+//! nueva con `claude --resume <id>` en su carpeta.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use moca_claude_sessions::scan::{ScanCache, default_desktop_dir, scan_sessions};
 use moca_claude_sessions::{
-    ClaudeSession, SessionGroup, StatusFilter, filter_and_group, parse_sessions_json,
-    relative_time, resume_command,
+    ClaudeSession, SessionGroup, StatusFilter, filter_and_group, relative_time, resume_command,
 };
 use warp_core::ui::theme::color::internal_colors;
 use warp_util::path::user_friendly_path;
@@ -55,6 +56,7 @@ pub struct ClaudeSessionsView {
     groups: Vec<SessionGroup>,
     load_state: LoadState,
     is_refreshing: bool,
+    cache: Arc<Mutex<ScanCache>>,
     collapsed: HashSet<String>,
     item_mouse_states: HashMap<String, MouseStateHandle>,
     header_mouse_states: HashMap<String, MouseStateHandle>,
@@ -93,6 +95,7 @@ impl ClaudeSessionsView {
             groups: Vec::new(),
             load_state: LoadState::Loading,
             is_refreshing: false,
+            cache: Arc::new(Mutex::new(ScanCache::default())),
             collapsed: HashSet::new(),
             item_mouse_states: HashMap::new(),
             header_mouse_states: HashMap::new(),
@@ -108,13 +111,14 @@ impl ClaudeSessionsView {
         self.refresh(ctx);
     }
 
-    /// Vuelve a leer las sesiones en segundo plano (el script tarda ~1 s).
+    /// Vuelve a leer las sesiones en segundo plano (solo los archivos que cambiaron).
     pub fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         if self.is_refreshing {
             return;
         }
         self.is_refreshing = true;
-        ctx.spawn(async move { load_sessions() }, |me, result, ctx| {
+        let cache = self.cache.clone();
+        ctx.spawn(async move { load_sessions(&cache) }, |me, result, ctx| {
             me.is_refreshing = false;
             match result {
                 Ok(sessions) => {
@@ -136,17 +140,8 @@ impl ClaudeSessionsView {
 
     fn rebuild_groups(&mut self, ctx: &mut ViewContext<Self>) {
         let query = self.query_editor.as_ref(ctx).buffer_text(ctx);
-        let home = dirs::home_dir().unwrap_or_default();
         let now = chrono::Local::now().naive_local();
-        self.groups = filter_and_group(
-            &self.sessions,
-            &home,
-            &query,
-            StatusFilter::All,
-            None,
-            true,
-            now,
-        );
+        self.groups = filter_and_group(&self.sessions, &query, StatusFilter::All, None, true, now);
         for group in &self.groups {
             self.header_mouse_states
                 .entry(group.client.clone())
@@ -180,24 +175,19 @@ impl ClaudeSessionsView {
     }
 }
 
-fn load_sessions() -> Result<Vec<ClaudeSession>, String> {
-    // Las apps de macOS no heredan el PATH del shell: se prueba primero la ruta habitual.
-    let script = dirs::home_dir()
-        .map(|home| home.join(".local/bin/sesiones-claude"))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("sesiones-claude"));
-    let output = std::process::Command::new(&script)
-        .arg("--json")
-        .output()
-        .map_err(|e| format!("No se pudo ejecutar sesiones-claude: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "sesiones-claude terminó con error: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+fn load_sessions(cache: &Mutex<ScanCache>) -> Result<Vec<ClaudeSession>, String> {
+    let home = dirs::home_dir().ok_or_else(|| "No se encontró la carpeta personal.".to_string())?;
+    let claude_dir = home.join(".claude");
+    if !claude_dir.is_dir() {
+        return Err("No hay sesiones de Claude Code en esta máquina.".to_string());
     }
-    parse_sessions_json(&String::from_utf8_lossy(&output.stdout))
-        .map_err(|e| format!("Respuesta inválida de sesiones-claude: {e}"))
+    let mut cache = cache.lock().map_err(|_| "Error interno".to_string())?;
+    Ok(scan_sessions(
+        &claude_dir,
+        Some(&default_desktop_dir(&home)),
+        &home,
+        &mut cache,
+    ))
 }
 
 fn render_search_box(query_editor: &ViewHandle<EditorView>, app: &AppContext) -> Box<dyn Element> {

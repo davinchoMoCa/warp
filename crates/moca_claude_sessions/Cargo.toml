@@ -11,3 +11,9 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

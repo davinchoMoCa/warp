@@ -781,6 +781,8 @@ pub enum WorkspaceAction {
         select_first: bool,
     },
     ToggleAgentManagementView,
+    /// moca: abre o cierra el tablero de proyectos de Claude.
+    MocaToggleClaudeProjects,
     ViewAgentRunsForEnvironment {
         environment_id: String,
     },
@@ -1180,6 +1182,7 @@ impl WorkspaceAction {
             | OpenConversationListView
             | ToggleNotificationMailbox { .. }
             | ToggleAgentManagementView
+            | MocaToggleClaudeProjects
             | OpenAgentManagementView
             | ViewAgentRunsForEnvironment { .. }
             | ToggleAIDocumentPane { .. }

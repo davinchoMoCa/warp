@@ -1,10 +1,12 @@
-//! Lógica pura para listar, buscar y agrupar sesiones de Claude Code
-//! a partir del JSON de `sesiones-claude --json`.
+//! Lógica pura para listar, buscar y agrupar sesiones de Claude Code. Las sesiones salen de
+//! [`scan::scan_sessions`], que lee directo de `~/.claude`.
+
+pub mod projects;
+pub mod scan;
 
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
-use serde::Deserialize;
 
 /// Dónde se ubica una sesión en el tablero de proyectos.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +29,8 @@ pub struct ClaudeSession {
     /// Carpeta del proyecto para agrupar (igual a `cwd` salvo en las huérfanas).
     pub project_dir: PathBuf,
     pub placement: Placement,
+    /// Cliente para agrupar (carpeta de cliente bajo `~/Documents/Moca`, "Moca" o "Personal").
+    pub client: String,
     pub last_activity: Option<NaiveDateTime>,
     pub messages: u32,
     pub active: bool,
@@ -34,50 +38,7 @@ pub struct ClaudeSession {
     pub archived: bool,
 }
 
-#[derive(Deserialize)]
-struct RawOutput {
-    sesiones: Vec<RawSession>,
-}
-
-#[derive(Deserialize)]
-struct RawSession {
-    id: String,
-    origen: Option<String>,
-    titulo: Option<String>,
-    carpeta: Option<String>,
-    ultima: Option<String>,
-    mensajes: Option<u32>,
-    archivada: Option<bool>,
-    activa: Option<bool>,
-    transcripcion: Option<String>,
-}
-
-/// Parsea la salida de `sesiones-claude --json`. Descarta las sesiones que no se pueden
-/// retomar con `claude --resume`: sin `carpeta` o sin `transcripcion`.
-pub fn parse_sessions_json(json: &str) -> Result<Vec<ClaudeSession>, serde_json::Error> {
-    let raw: RawOutput = serde_json::from_str(json)?;
-    Ok(raw
-        .sesiones
-        .into_iter()
-        .filter(|s| s.carpeta.is_some() && s.transcripcion.is_some())
-        .map(|s| ClaudeSession {
-            id: s.id,
-            title: s.titulo.unwrap_or_else(|| "(sin título)".to_string()),
-            cwd: PathBuf::from(s.carpeta.clone().unwrap_or_default()),
-            project_dir: PathBuf::from(s.carpeta.unwrap_or_default()),
-            placement: Placement::Opened,
-            last_activity: s.ultima.as_deref().and_then(parse_datetime),
-            messages: s.mensajes.unwrap_or(0),
-            active: s.activa.unwrap_or(false),
-            from_desktop_app: s
-                .origen
-                .as_deref()
-                .is_some_and(|o| o.starts_with("Desktop")),
-            archived: s.archivada.unwrap_or(false),
-        })
-        .collect())
-}
-
+#[cfg(test)]
 fn parse_datetime(value: &str) -> Option<NaiveDateTime> {
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
@@ -120,6 +81,11 @@ fn normalize(text: &str) -> Vec<char> {
             }
         })
         .collect()
+}
+
+/// `word` aparece en `text`, sin distinguir mayúsculas ni acentos.
+pub(crate) fn normalized_contains(text: &str, word: &str) -> bool {
+    contains(&normalize(text), &normalize(word))
 }
 
 fn contains(haystack: &[char], needle: &[char]) -> bool {
@@ -188,7 +154,6 @@ fn passes_status(session: &ClaudeSession, status: StatusFilter, now: NaiveDateTi
 /// final). Grupos ordenados por la sesión más reciente de cada uno. `now` define "Today".
 pub fn filter_and_group(
     sessions: &[ClaudeSession],
-    home: &Path,
     query: &str,
     status: StatusFilter,
     client_filter: Option<&str>,
@@ -203,7 +168,7 @@ pub fn filter_and_group(
         if !passes_status(session, status, now) {
             continue;
         }
-        let client = client_for(&session.cwd, home);
+        let client = session.client.clone();
         if client_filter.is_some_and(|c| c != client) {
             continue;
         }
@@ -231,7 +196,6 @@ pub fn filter_and_group(
 /// actividad más reciente: (cliente, total, activas).
 pub fn clients_summary(
     sessions: &[ClaudeSession],
-    home: &Path,
     hide_empty: bool,
 ) -> Vec<(String, usize, usize)> {
     let mut order: Vec<String> = Vec::new();
@@ -240,7 +204,7 @@ pub fn clients_summary(
         if session.archived || (hide_empty && is_empty_session(session)) {
             continue;
         }
-        let client = client_for(&session.cwd, home);
+        let client = session.client.clone();
         match order.iter().position(|c| *c == client) {
             Some(pos) => {
                 let row = &mut rows[pos];
@@ -309,46 +273,13 @@ mod tests {
             cwd: PathBuf::from(cwd),
             project_dir: PathBuf::from(cwd),
             placement: Placement::Opened,
+            client: client_for(Path::new(cwd), &home()),
             last_activity: ultima.map(dt),
             messages: 10,
             active: false,
             from_desktop_app: false,
             archived: false,
         }
-    }
-
-    #[test]
-    fn parse_descarta_sin_carpeta_o_transcripcion() {
-        let json = r#"{"sesiones":[
-            {"id":"abc","origen":"Terminal","titulo":"MocaWarp","carpeta":"/Users/macuser",
-             "ultima":"2026-10-21 12:08:10.367561","mensajes":2795,"mb":34.2,"version":"2.1.289",
-             "rama":"HEAD","modelo":null,"archivada":false,"activa":true,"estado":"busy","pid":1,
-             "transcripcion":"/tmp/x.jsonl"},
-            {"id":"def","origen":"Desktop · Cowork","titulo":"Algo","carpeta":null,"ultima":null,
-             "mensajes":null,"mb":null,"version":null,"rama":null,"modelo":null,"archivada":false,
-             "activa":false,"estado":null,"pid":null,"transcripcion":null},
-            {"id":"ghi","origen":"Desktop","titulo":"Migración corporativa",
-             "carpeta":"/Users/macuser/Documents/Moca/Manifesto/elbarretal",
-             "ultima":"2026-10-19 13:00:55","mensajes":null,"archivada":true,"activa":false,
-             "transcripcion":"/tmp/y.jsonl"}
-        ],"skills":[]}"#;
-        let sessions = parse_sessions_json(json).unwrap();
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].id, "abc");
-        assert!(sessions[0].active);
-        assert!(!sessions[0].archived);
-        assert!(!sessions[0].from_desktop_app);
-        assert_eq!(sessions[0].messages, 2795);
-        assert_eq!(
-            sessions[0].last_activity,
-            Some(dt("2026-10-21 12:08:10.367561"))
-        );
-        // mensajes null => 0, fecha sin fracción, origen Desktop
-        assert_eq!(sessions[1].id, "ghi");
-        assert_eq!(sessions[1].messages, 0);
-        assert!(sessions[1].from_desktop_app);
-        assert!(sessions[1].archived);
-        assert_eq!(sessions[1].last_activity, Some(dt("2026-10-19 13:00:55")));
     }
 
     #[test]
@@ -410,7 +341,6 @@ mod tests {
 
     #[test]
     fn filter_and_group_ordena_y_filtra() {
-        let home = home();
         let moca = |name: &str| format!("/Users/macuser/Documents/Moca/{name}/x");
         let vieja = Some("2026-10-19 10:00:00");
         let hoy_a = Some("2026-10-21 09:00:00");
@@ -429,7 +359,7 @@ mod tests {
         let sessions = vec![s1, s2, s3, s4, archivada];
 
         // Orden: PeterPeter (11:00) > Manifesto (09:00) > Personal (09:00). Archivada fuera.
-        let groups = filter_and_group(&sessions, &home, "", StatusFilter::All, None, false, now);
+        let groups = filter_and_group(&sessions, "", StatusFilter::All, None, false, now);
         let names: Vec<&str> = groups.iter().map(|g| g.client.as_str()).collect();
         assert_eq!(names, ["PeterPeter", "Manifesto", "Personal"]);
         // Dentro del grupo Manifesto: más reciente primero.
@@ -442,14 +372,14 @@ mod tests {
         assert_eq!(ids, ["2", "1"]);
 
         // Filtro Active.
-        let groups = filter_and_group(&sessions, &home, "", StatusFilter::Active, None, false, now);
+        let groups = filter_and_group(&sessions, "", StatusFilter::Active, None, false, now);
         let names: Vec<&str> = groups.iter().map(|g| g.client.as_str()).collect();
         assert_eq!(names, ["PeterPeter", "Manifesto"]);
         assert_eq!(groups[0].sessions[0].0.id, "3");
         assert_eq!(groups[1].sessions[0].0.id, "1");
 
         // Filtro Today: la sesión vieja queda fuera.
-        let groups = filter_and_group(&sessions, &home, "", StatusFilter::Today, None, false, now);
+        let groups = filter_and_group(&sessions, "", StatusFilter::Today, None, false, now);
         let manifesto = groups.iter().find(|g| g.client == "Manifesto").unwrap();
         assert_eq!(manifesto.sessions.len(), 1);
         assert_eq!(manifesto.sessions[0].0.id, "2");
@@ -457,7 +387,6 @@ mod tests {
         // Filtro por cliente exacto.
         let groups = filter_and_group(
             &sessions,
-            &home,
             "",
             StatusFilter::All,
             Some("PeterPeter"),
@@ -474,7 +403,7 @@ mod tests {
         pocos.messages = 2;
         let mut list = sessions.clone();
         list.extend([vacia, pocos]);
-        let groups = filter_and_group(&list, &home, "", StatusFilter::All, None, true, now);
+        let groups = filter_and_group(&list, "", StatusFilter::All, None, true, now);
         let ids: Vec<&str> = groups
             .iter()
             .flat_map(|g| g.sessions.iter().map(|(s, _)| s.id.as_str()))
@@ -485,7 +414,6 @@ mod tests {
 
     #[test]
     fn clients_summary_conteo_y_orden() {
-        let home = home();
         let now_a = Some("2026-10-21 09:00:00");
         let now_b = Some("2026-10-21 11:00:00");
         let mut a = session("1", "A", "/Users/macuser/Documents/Moca/Manifesto/x", now_a);
@@ -504,7 +432,7 @@ mod tests {
             now_b,
         );
         arch.archived = true;
-        let summary = clients_summary(&[a, b, c, arch], &home, false);
+        let summary = clients_summary(&[a, b, c, arch], false);
         assert_eq!(
             summary,
             vec![

@@ -2,7 +2,8 @@ pub(crate) mod agent_cli_launch_modal;
 pub(crate) mod auto_handoff_sleep_modal;
 mod build_plan_migration_modal;
 pub(crate) mod chatgpt_plan_modal;
-// moca: panel de sesiones de Claude Code
+// moca: tablero de proyectos y panel de sesiones de Claude Code
+pub(crate) mod claude_projects;
 pub(crate) mod claude_sessions;
 pub(crate) mod cloud_agent_capacity_modal;
 pub(crate) mod codex_modal;
@@ -1202,6 +1203,9 @@ pub struct Workspace {
     right_panel_view: ViewHandle<RightPanelView>,
     working_directories_model: ModelHandle<pane_group::WorkingDirectoriesModel>,
     agent_management_view: ViewHandle<AgentManagementView>,
+    /// moca: tablero de proyectos de Claude; reemplaza el contenido mientras está abierto.
+    moca_claude_projects_view: ViewHandle<claude_projects::ClaudeProjectsView>,
+    moca_claude_projects_open: bool,
     notification_mailbox_view: Option<ViewHandle<NotificationMailboxView>>,
     notification_toast_stack: Option<ViewHandle<AgentNotificationToastStack>>,
     lightbox_view: Option<ViewHandle<LightboxView>>,
@@ -3157,6 +3161,25 @@ impl Workspace {
         ctx.subscribe_to_view(&agent_management_view, |me, _, event, ctx| {
             me.handle_agent_management_view_event(event, ctx);
         });
+        let moca_claude_projects_view =
+            ctx.add_typed_action_view(claude_projects::ClaudeProjectsView::new);
+        ctx.subscribe_to_view(
+            &moca_claude_projects_view,
+            |me, _, event, ctx| match event {
+                claude_projects::Event::OpenSession {
+                    cwd,
+                    command,
+                    title,
+                } => {
+                    me.moca_set_claude_projects_open(false, ctx);
+                    me.moca_open_claude_session(cwd.clone(), command, title.clone(), ctx);
+                }
+                claude_projects::Event::Close => {
+                    me.moca_set_claude_projects_open(false, ctx);
+                    me.focus_active_tab(ctx);
+                }
+            },
+        );
 
         let notification_mailbox_view = if FeatureFlag::HOANotifications.is_enabled() {
             let view = ctx.add_typed_action_view(NotificationMailboxView::new);
@@ -3576,6 +3599,8 @@ impl Workspace {
             chatgpt_plan_modal: chatgpt_plan_view,
             enable_auto_reload_modal,
             agent_management_view,
+            moca_claude_projects_view,
+            moca_claude_projects_open: false,
             notification_mailbox_view,
             notification_toast_stack,
             codex_modal,
@@ -5518,6 +5543,7 @@ impl Workspace {
             if FeatureFlag::AgentManagementView.is_enabled() {
                 self.set_is_agent_management_view_open(false, ctx);
             }
+            self.moca_set_claude_projects_open(false, ctx);
 
             self.set_active_tab_index(index, ctx);
             self.focus_active_tab(ctx);
@@ -6809,6 +6835,41 @@ impl Workspace {
                 self.moca_open_claude_session(cwd.clone(), command, title.clone(), ctx);
             }
         }
+    }
+
+    /// moca: abre o cierra el tablero de proyectos de Claude.
+    fn moca_set_claude_projects_open(&mut self, is_open: bool, ctx: &mut ViewContext<Self>) {
+        if self.moca_claude_projects_open == is_open {
+            return;
+        }
+        self.moca_claude_projects_open = is_open;
+        if is_open {
+            if FeatureFlag::AgentManagementView.is_enabled() {
+                self.set_is_agent_management_view_open(false, ctx);
+            }
+            ctx.focus(&self.moca_claude_projects_view);
+            self.moca_claude_projects_view.update(ctx, |view, ctx| {
+                view.on_opened(ctx);
+            });
+        }
+        ctx.notify();
+    }
+
+    fn moca_render_claude_projects_button(&self, appearance: &Appearance) -> Box<dyn Element> {
+        Align::new(
+            self.render_tab_bar_icon_button(
+                appearance,
+                icons::Icon::ClaudeLogo,
+                &self.mouse_states.moca_claude_projects_button,
+                WorkspaceAction::MocaToggleClaudeProjects,
+                "Proyectos".to_string(),
+                None,
+                self.moca_claude_projects_open,
+                false,
+            )
+            .finish(),
+        )
+        .finish()
     }
 
     /// moca: abre una pestaña nueva en `cwd` que corre `command` (`claude --resume <id>`).
@@ -21475,13 +21536,25 @@ impl Workspace {
         let inner = match item {
             HeaderToolbarItemKind::TabsPanel => self.render_left_toggle_button(appearance, ctx),
             HeaderToolbarItemKind::ToolsPanel => {
+                // moca: el botón de Proyectos va junto al de herramientas.
+                let projects = self.moca_render_claude_projects_button(appearance);
                 if self.left_panel_views.is_empty() {
-                    return None;
-                }
-                if vertical_tabs_active {
-                    self.render_tools_panel_button(appearance, ctx)
+                    projects
                 } else {
-                    self.render_left_toggle_button(appearance, ctx)
+                    let tools = if vertical_tabs_active {
+                        self.render_tools_panel_button(appearance, ctx)
+                    } else {
+                        self.render_left_toggle_button(appearance, ctx)
+                    };
+                    Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(tools)
+                        .with_child(
+                            Container::new(projects)
+                                .with_margin_left(TAB_BAR_ICON_PADDING)
+                                .finish(),
+                        )
+                        .finish()
                 }
             }
             HeaderToolbarItemKind::AgentManagement => {
@@ -22286,7 +22359,9 @@ impl Workspace {
     ) -> Box<dyn Element> {
         let active_tab_data = &self.tabs[self.active_tab_index];
 
-        let active_content = if FeatureFlag::AgentManagementView.is_enabled()
+        let active_content = if self.moca_claude_projects_open {
+            ChildView::new(&self.moca_claude_projects_view).finish()
+        } else if FeatureFlag::AgentManagementView.is_enabled()
             && self.current_workspace_state.is_agent_management_view_open
         {
             ChildView::new(&self.agent_management_view).finish()
@@ -25162,6 +25237,13 @@ impl TypedActionView for Workspace {
                     ctx
                 );
                 ctx.notify();
+            }
+            MocaToggleClaudeProjects => {
+                let is_open = !self.moca_claude_projects_open;
+                self.moca_set_claude_projects_open(is_open, ctx);
+                if !is_open {
+                    self.focus_active_tab(ctx);
+                }
             }
             ToggleAgentManagementView => {
                 if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
